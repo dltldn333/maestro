@@ -1,47 +1,68 @@
 import { useEffect, useRef, useState } from "react";
-import { Handle, NodeResizer, Position, useReactFlow, useStore, type NodeProps } from "@xyflow/react";
+import { Handle, NodeResizer, Position, useStore as useFlowStore, type NodeProps } from "@xyflow/react";
 import { listen } from "@tauri-apps/api/event";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { b64ToBytes, ipc } from "../ipc";
+import { StatusDot } from "../Sidebar";
+import { useStore, useWorktree } from "../store";
 import type { PtyStdoutBatchEvent, TerminalFlowNode } from "../types";
 
 const LOD_ZOOM = 0.6;
 
-export function TerminalNode({ id, data, selected }: NodeProps<TerminalFlowNode>) {
-  const lod = useStore((s) => s.transform[2] < LOD_ZOOM);
-  const { updateNodeData } = useReactFlow();
-  const alive = data.status !== "TERMINATED";
+export function TerminalNode({ data, selected }: NodeProps<TerminalFlowNode>) {
+  const lod = useFlowStore((s) => s.transform[2] < LOD_ZOOM);
+  const wt = useWorktree(data.worktreePath);
+  const focused = useStore((s) => s.selectedPath === data.worktreePath);
+  const { patch, remove, setError } = useStore();
+  if (!wt) return null;
+  const alive = wt.status !== "TERMINATED" && !!wt.sessionId;
+
+  const start = async (adapterId: string) => {
+    try {
+      const s = await ipc.startSession({ worktreePath: wt.path, adapterId, cols: 100, rows: 28 });
+      patch(wt.path, { sessionId: s.sessionId, adapterId, status: s.state.kind, port: s.allocatedPort ?? undefined });
+    } catch (e) {
+      setError(e);
+    }
+  };
 
   const discard = async () => {
-    if (!confirm(`워크트리와 브랜치 '${data.branchName}'를 삭제합니다. 커밋하지 않은 작업과 이 브랜치의 커밋이 사라집니다.`)) return;
+    if (!confirm(`워크트리와 브랜치 '${wt.branch}'를 삭제합니다.\n커밋하지 않은 작업과 이 브랜치의 커밋이 사라집니다.`)) return;
     try {
-      await ipc.discard(data.sessionId);
-      updateNodeData(id, { status: "TERMINATED" });
+      await ipc.discardWorktree(wt.root, wt.path, wt.branch);
+      remove(wt.path);
     } catch (e) {
-      alert(String(e));
+      setError(e);
     }
   };
 
   return (
-    <div className="node node-terminal" data-status={data.status}>
+    <div className="node node-terminal" data-focused={focused || undefined}>
       <NodeResizer isVisible={selected} minWidth={360} minHeight={220} />
       <Handle type="target" position={Position.Left} />
       <header>
-        <span className="dot" />
-        <b>{data.branchName}</b>
-        <span className="muted">{data.adapterId}{data.allocatedPort ? ` · :${data.allocatedPort}` : ""}</span>
+        <StatusDot w={wt} />
+        <b>{wt.branch}</b>
+        <span className="muted small">{wt.adapterId === "shell" ? "Shell" : wt.adapterId ? "Claude Code" : ""}{wt.port && alive ? ` · PORT ${wt.port}` : ""}</span>
         <span className="spacer" />
-        {alive && <button onClick={() => ipc.kill(data.sessionId)}>종료</button>}
-        <button onClick={discard}>폐기</button>
+        {alive ? (
+          <button onClick={() => ipc.kill(wt.sessionId!).catch(setError)}>중지</button>
+        ) : (
+          <>
+            <button onClick={() => start("claude-code")}>▶ Claude Code</button>
+            <button onClick={() => start("shell")}>▶ Shell</button>
+          </>
+        )}
+        <button className="danger" onClick={discard}>폐기</button>
       </header>
       {!alive ? (
-        <div className="lod muted">세션 종료됨 · {data.worktreePath}</div>
+        <div className="lod muted">에이전트가 실행 중이 아니에요. 위 버튼으로 이 워크트리에서 다시 실행할 수 있어요.{"\n\n"}{wt.path}</div>
       ) : lod ? (
-        <LodCard sessionId={data.sessionId} />
+        <LodCard sessionId={wt.sessionId!} />
       ) : (
-        <XTerm sessionId={data.sessionId} />
+        <XTerm sessionId={wt.sessionId!} />
       )}
     </div>
   );
@@ -70,7 +91,7 @@ function XTerm({ sessionId }: { sessionId: string }) {
     const term = new Terminal({
       fontFamily: "Cascadia Mono, Consolas, monospace",
       fontSize: 13,
-      theme: { background: "#000000" },
+      theme: { background: "#0b0d10" },
       scrollback: 5000,
     });
     const fit = new FitAddon();

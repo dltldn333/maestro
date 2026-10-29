@@ -12,11 +12,25 @@ use tauri::{AppHandle, Emitter};
 const BATCH_WINDOW: Duration = Duration::from_millis(16);
 const BATCH_MAX: usize = 64 * 1024;
 const SCROLLBACK_MAX: usize = 1024 * 1024;
+/// No output for this long = the agent is waiting (shown as idle, like Orca's activity dot).
+const IDLE_AFTER: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Serialize, Clone)]
 #[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE", rename_all_fields = "camelCase")]
 pub enum AgentState {
+    Running,
+    Idle,
     Terminated { exit_code: Option<i32> },
+}
+
+/// Emits only real transitions; Terminated is final.
+fn set_state(app: &AppHandle, session_id: &str, cur: &Mutex<AgentState>, next: AgentState) {
+    let mut cur = cur.lock().unwrap();
+    if matches!(*cur, AgentState::Terminated { .. }) || std::mem::discriminant(&*cur) == std::mem::discriminant(&next) {
+        return;
+    }
+    *cur = next.clone();
+    let _ = app.emit("agent://state", AgentStateEvent { session_id: session_id.into(), state: next });
 }
 
 /// Event "pty://stdout". `seq` = total bytes emitted so far, so a remounted terminal
@@ -60,6 +74,7 @@ pub struct Pty {
     master: Mutex<Box<dyn MasterPty + Send>>,
     child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
     pub scrollback: Arc<Mutex<Scrollback>>,
+    pub state: Arc<Mutex<AgentState>>,
 }
 
 impl Pty {
@@ -81,6 +96,7 @@ impl Pty {
 
         let scrollback = Arc::new(Mutex::new(Scrollback::default()));
         let child = Arc::new(Mutex::new(child));
+        let state = Arc::new(Mutex::new(AgentState::Running));
 
         // Blocking reads live on their own thread so a silent PTY never stalls anything else.
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
@@ -94,9 +110,18 @@ impl Pty {
         });
 
         // Batcher: one IPC event per 16 ms window (or sooner at 64 KB). Never drops bytes.
-        let (sb, app2, sid) = (scrollback.clone(), app.clone(), session_id.clone());
-        thread::spawn(move || {
-            while let Ok(first) = rx.recv() {
+        let (sb, app2, sid, st) = (scrollback.clone(), app.clone(), session_id.clone(), state.clone());
+        thread::spawn(move || loop {
+            let first = match rx.recv_timeout(IDLE_AFTER) {
+                Ok(c) => c,
+                Err(RecvTimeoutError::Timeout) => {
+                    set_state(&app2, &sid, &st, AgentState::Idle);
+                    continue;
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
+            };
+            set_state(&app2, &sid, &st, AgentState::Running);
+            {
                 let mut batch = first;
                 let deadline = Instant::now() + BATCH_WINDOW;
                 while batch.len() < BATCH_MAX {
@@ -122,24 +147,21 @@ impl Pty {
         });
 
         // ConPTY may keep the read pipe open after the child exits, so poll the child instead of waiting for EOF.
-        let (ch, sid) = (child.clone(), session_id.clone());
+        let (ch, sid, st) = (child.clone(), session_id.clone(), state.clone());
         thread::spawn(move || loop {
             thread::sleep(Duration::from_millis(500));
             let status = ch.lock().unwrap().try_wait();
             match status {
                 Ok(None) => continue,
-                Ok(Some(st)) => {
-                    let _ = app.emit("agent://state", AgentStateEvent {
-                        session_id: sid,
-                        state: AgentState::Terminated { exit_code: Some(st.exit_code() as i32) },
-                    });
+                Ok(Some(code)) => {
+                    set_state(&app, &sid, &st, AgentState::Terminated { exit_code: Some(code.exit_code() as i32) });
                     break;
                 }
                 Err(_) => break,
             }
         });
 
-        Ok(Pty { writer: Mutex::new(writer), master: Mutex::new(pair.master), child, scrollback })
+        Ok(Pty { writer: Mutex::new(writer), master: Mutex::new(pair.master), child, scrollback, state })
     }
 
     pub fn write(&self, data: &[u8]) -> Result<(), String> {
