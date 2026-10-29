@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { ipc } from "./ipc";
+import { useSettings } from "./settings";
 import { useStore } from "./store";
 import type { Repo } from "./types";
 
-const AGENTS = [
+export const AGENTS: Array<{ id: string; label: string; disabled?: boolean }> = [
   { id: "claude-code", label: "Claude Code" },
   { id: "codex", label: "Codex (준비 중)", disabled: true },
 ];
@@ -19,7 +20,7 @@ const PERMISSIONS = [
 export function NewAgentDialog({ repo, onClose }: { repo: Repo; onClose: () => void }) {
   const count = useStore((s) => s.worktrees.filter((w) => w.root === repo.root).length);
   const { upsert, select } = useStore();
-  const [agent, setAgent] = useState("claude-code");
+  const [agent, setAgent] = useState(useSettings.getState().defaultAgent);
   const [perm, setPerm] = useState("acceptEdits");
   const [branch, setBranch] = useState(`agent-${count + 1}`);
   const [base, setBase] = useState(repo.defaultBranch);

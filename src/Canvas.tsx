@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Background,
-  Controls,
-  MiniMap,
   Panel,
   ReactFlow,
   addEdge,
   useEdgesState,
   useNodesState,
   useReactFlow,
+  useStore as useFlowStore,
   type Connection,
   type IsValidConnection,
 } from "@xyflow/react";
@@ -18,6 +17,8 @@ import { ipc } from "./ipc";
 import { PromptNode } from "./nodes/PromptNode";
 import { AgentNode, GRID, TERM_SIZES } from "./nodes/AgentNode";
 import { useStore } from "./store";
+import { ViewMap } from "./ViewMap";
+import { motionMs, useSettings } from "./settings";
 import type { CanvasEdge, CanvasNode, CanvasStateSchema, TerminalFlowNode } from "./types";
 
 const nodeTypes = { prompt_input_primitive: PromptNode, pty_terminal_node: AgentNode };
@@ -32,6 +33,32 @@ const normalize = (n: CanvasNode): CanvasNode => {
     : { ...n, position, width: undefined, height: undefined };
 };
 
+const Icon = ({ d }: { d: string }) => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <path d={d} />
+  </svg>
+);
+
+/** Bottom-left zoom bar: − zoom% + | fit. Clicking the percentage resets to 100%. */
+function CanvasControls() {
+  const zoom = useFlowStore((s) => s.transform[2]);
+  const { zoomIn, zoomOut, zoomTo, fitView } = useReactFlow();
+  const duration = motionMs(useSettings.getState());
+  return (
+    <Panel position="bottom-left">
+      <div className="cc">
+        <button title="축소" onClick={() => zoomOut({ duration })}><Icon d="M3.5 8h9" /></button>
+        <button className="cc-zoom" title="100%로" onClick={() => zoomTo(1, { duration })}>{Math.round(zoom * 100)}%</button>
+        <button title="확대" onClick={() => zoomIn({ duration })}><Icon d="M3.5 8h9M8 3.5v9" /></button>
+        <span className="cc-sep" />
+        <button title="전체 보기" onClick={() => fitView({ padding: 0.15, maxZoom: 1, duration })}>
+          <Icon d="M2.5 6V3.5a1 1 0 0 1 1-1H6M10 2.5h2.5a1 1 0 0 1 1 1V6M13.5 10v2.5a1 1 0 0 1-1 1H10M6 13.5H3.5a1 1 0 0 1-1-1V10" />
+        </button>
+      </div>
+    </Panel>
+  );
+}
+
 /** The CLI area: one canvas per repo. CLI blocks mirror the repo's agent worktrees; prompt blocks are free. */
 export function Canvas({ root, onNewAgent }: { root: string; onNewAgent: () => void }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<CanvasNode>([]);
@@ -42,6 +69,7 @@ export function Canvas({ root, onNewAgent }: { root: string; onNewAgent: () => v
   const selectedPath = useStore((s) => s.selectedPath);
   const select = useStore((s) => s.select);
   const setError = useStore((s) => s.setError);
+  const theme = useSettings((s) => s.theme);
   const [loaded, setLoaded] = useState(false);
   const [viewTick, setViewTick] = useState(0);
   const wtKey = worktrees.map((w) => `${w.path}|${w.branch}`).join("\n");
@@ -93,7 +121,7 @@ export function Canvas({ root, onNewAgent }: { root: string; onNewAgent: () => v
   // Sidebar selection → fly to that terminal.
   useEffect(() => {
     const n = nodes.find((n) => n.type === "pty_terminal_node" && n.data.worktreePath === selectedPath);
-    if (n) setCenter(n.position.x + (n.width ?? TERM_W) / 2, n.position.y + (n.height ?? TERM_H) / 2, { zoom: Math.max(getZoom(), 0.9), duration: 300 });
+    if (n) setCenter(n.position.x + (n.width ?? TERM_W) / 2, n.position.y + (n.height ?? TERM_H) / 2, { zoom: Math.max(getZoom(), 0.9), duration: motionMs(useSettings.getState()) * 1.5 });
   }, [selectedPath]);
 
   // Debounced autosave (backend writes atomically).
@@ -149,12 +177,12 @@ export function Canvas({ root, onNewAgent }: { root: string; onNewAgent: () => v
       snapGrid={[GRID, GRID]}
       minZoom={0.15}
       deleteKeyCode={["Delete"]}
-      colorMode="dark"
+      colorMode={theme === "light" ? "light" : "dark"}
       proOptions={{ hideAttribution: true }}
     >
       <Background gap={GRID} />
-      <Controls position="bottom-left" />
-      <MiniMap pannable zoomable position="bottom-right" />
+      <CanvasControls />
+      <ViewMap nodes={nodes} />
       <Panel position="top-left">
         <div className="canvas-tools">
           <button className="primary" onClick={onNewAgent}>+ CLI 블록</button>

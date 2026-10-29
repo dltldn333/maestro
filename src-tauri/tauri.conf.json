@@ -10,7 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [{ "title": "Maestro", "width": 1360, "height": 820, "center": true,"dragDropEnabled": false }],
+    "windows": [{ "title": "Maestro", "width": 1360, "height": 820, "center": true, "dragDropEnabled": false, "decorations": false }],
     "security": { "csp": null }
   },
   "bundle": {
