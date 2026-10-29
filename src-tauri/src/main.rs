@@ -1,50 +1,35 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod pty;
+mod agent;
 mod worktree;
 
-use base64::{engine::general_purpose::STANDARD as B64, Engine};
-use pty::{AgentState, Pty};
+use agent::{Agent, AgentMeta, AgentState, Files};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Manager, State};
 
-struct Session {
-    worktree_path: String,
-    adapter_id: String,
-    port: Option<u16>,
-    pty: Pty,
-}
-
+/// Running agents keyed by lowercased worktree path (Windows paths are case-insensitive).
 #[derive(Default)]
 struct AppState {
-    sessions: Mutex<HashMap<String, Arc<Session>>>,
-    next_id: Mutex<u64>,
+    agents: Mutex<HashMap<String, Arc<Agent>>>,
 }
 
 impl AppState {
-    fn get(&self, id: &str) -> Result<Arc<Session>, String> {
-        self.sessions.lock().unwrap().get(id).cloned().ok_or_else(|| format!("세션이 없습니다: {id}"))
+    fn get(&self, path: &str) -> Option<Arc<Agent>> {
+        self.agents.lock().unwrap().get(&path.to_lowercase()).cloned()
     }
 }
 
-fn maestro_home(app: &AppHandle) -> Result<PathBuf, String> {
+fn home(app: &AppHandle) -> Result<PathBuf, String> {
     app.path().home_dir().map_err(|e| e.to_string())
 }
 
-/// shortcut: hardcoded adapters; move to ~/.maestro/adapters_registry.json when a second CLI is needed.
-fn adapter_argv(adapter_id: &str) -> Result<Vec<String>, String> {
-    let bin = match adapter_id {
-        "claude-code" => "claude",
-        "shell" if cfg!(windows) => return Ok(vec!["powershell.exe".into(), "-NoLogo".into()]),
-        "shell" => return Ok(vec![std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into())]),
-        _ => return Err(format!("알 수 없는 어댑터: {adapter_id}")),
-    };
-    // npm installs CLIs as .cmd shims, which CreateProcess cannot run directly
-    Ok(if cfg!(windows) { vec!["cmd.exe".into(), "/c".into(), bin.into()] } else { vec![bin.into()] })
+fn files(app: &AppHandle, project_root: &str, worktree_path: &str) -> Result<Files, String> {
+    Ok(Files::new(&worktree::project_dir(&home(app)?, project_root), worktree_path))
 }
 
 // ---------- repos (~/.maestro/repos.json) ----------
@@ -66,7 +51,7 @@ fn repo_info(root: &str) -> RepoInfo {
 }
 
 fn repos_file(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(maestro_home(app)?.join(".maestro").join("repos.json"))
+    Ok(home(app)?.join(".maestro").join("repos.json"))
 }
 
 fn read_repos(app: &AppHandle) -> Result<Vec<String>, String> {
@@ -75,10 +60,6 @@ fn read_repos(app: &AppHandle) -> Result<Vec<String>, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(vec![]),
         Err(e) => Err(e.to_string()),
     }
-}
-
-fn write_repos(app: &AppHandle, roots: &[String]) -> Result<(), String> {
-    atomic_write(&repos_file(app)?, &serde_json::to_string_pretty(roots).unwrap())
 }
 
 /// Write .tmp then rename, so a crash never leaves a half-written file.
@@ -100,7 +81,7 @@ async fn add_repo(app: AppHandle, path: String) -> Result<RepoInfo, String> {
     let mut roots = read_repos(&app)?;
     if !roots.contains(&root) {
         roots.push(root.clone());
-        write_repos(&app, &roots)?;
+        atomic_write(&repos_file(&app)?, &serde_json::to_string_pretty(&roots).unwrap())?;
     }
     Ok(repo_info(&root))
 }
@@ -109,181 +90,123 @@ async fn add_repo(app: AppHandle, path: String) -> Result<RepoInfo, String> {
 #[tauri::command]
 fn remove_repo(app: AppHandle, root: String) -> Result<(), String> {
     let roots: Vec<String> = read_repos(&app)?.into_iter().filter(|r| *r != root).collect();
-    write_repos(&app, &roots)
+    atomic_write(&repos_file(&app)?, &serde_json::to_string_pretty(&roots).unwrap())
 }
 
-// ---------- worktrees & sessions ----------
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SessionInfo {
-    session_id: String,
-    adapter_id: String,
-    state: AgentState,
-    allocated_port: Option<u16>,
-}
+// ---------- worktrees & agents ----------
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WorktreeInfo {
     path: String,
     branch: String,
-    session: Option<SessionInfo>,
+    adapter_id: Option<String>,
+    permission_mode: Option<String>,
+    state: AgentState,
 }
 
-fn session_for_path(state: &AppState, path: &str) -> Option<(String, Arc<Session>)> {
-    // newest session wins if a worktree was restarted
-    state.sessions.lock().unwrap().iter()
-        .filter(|(_, s)| s.worktree_path.eq_ignore_ascii_case(path))
-        .max_by_key(|(id, _)| id[1..].parse::<u64>().unwrap_or(0))
-        .map(|(id, s)| (id.clone(), s.clone()))
-}
-
-fn session_info(id: String, s: &Session) -> SessionInfo {
-    SessionInfo { session_id: id, adapter_id: s.adapter_id.clone(), state: s.pty.state.lock().unwrap().clone(), allocated_port: s.port }
+fn info(state: &AppState, f: &Files, path: String, branch: String) -> WorktreeInfo {
+    let meta = f.read_meta();
+    WorktreeInfo {
+        state: state.get(&path).map(|a| a.state.lock().unwrap().clone()).unwrap_or(AgentState::Idle),
+        adapter_id: meta.as_ref().map(|m| m.adapter_id.clone()),
+        permission_mode: meta.map(|m| m.permission_mode),
+        path,
+        branch,
+    }
 }
 
 #[tauri::command]
 async fn list_worktrees(app: AppHandle, state: State<'_, AppState>, project_root: String) -> Result<Vec<WorktreeInfo>, String> {
-    let pdir = worktree::project_dir(&maestro_home(&app)?, &project_root);
+    let pdir = worktree::project_dir(&home(&app)?, &project_root);
     Ok(worktree::list(&project_root, &pdir)?
         .into_iter()
-        .map(|(path, branch)| {
-            let session = session_for_path(&state, &path).map(|(id, s)| session_info(id, &s));
-            WorktreeInfo { path, branch, session }
-        })
+        .map(|(path, branch)| info(&state, &Files::new(&pdir, &path), path, branch))
         .collect())
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct StartSessionReq {
-    worktree_path: String,
-    adapter_id: String,
-    cols: u16,
-    rows: u16,
-}
-
-/// Starts an agent CLI inside an existing worktree.
-#[tauri::command]
-async fn start_session(app: AppHandle, state: State<'_, AppState>, req: StartSessionReq) -> Result<SessionInfo, String> {
-    let argv = adapter_argv(&req.adapter_id)?;
-    if let Some((_, old)) = session_for_path(&state, &req.worktree_path) {
-        if !matches!(*old.pty.state.lock().unwrap(), AgentState::Terminated { .. }) {
-            return Err("이 워크트리에는 이미 실행 중인 에이전트가 있습니다".into());
-        }
-    }
-    let session_id = {
-        let mut n = state.next_id.lock().unwrap();
-        *n += 1;
-        format!("s{}", *n)
-    };
-    let port = {
-        let used: Vec<u16> = state.sessions.lock().unwrap().values().filter_map(|s| s.port).collect();
-        (3001..=3099).find(|p| !used.contains(p))
-    };
-    let pty = Pty::spawn(app, session_id.clone(), &argv, Path::new(&req.worktree_path), port, req.cols, req.rows)?;
-    let session = Session { worktree_path: req.worktree_path, adapter_id: req.adapter_id, port, pty };
-    let info = session_info(session_id.clone(), &session);
-    state.sessions.lock().unwrap().insert(session_id, Arc::new(session));
-    Ok(info)
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CreateWorktreeReq {
+struct CreateAgentReq {
     project_root: String,
     adapter_id: String,
+    permission_mode: String,
     branch_name: String,
     base_branch: String,
-    cols: u16,
-    rows: u16,
 }
 
-/// New worktree + agent in one step (PRD spawn_worktree_agent).
+/// A CLI block: new worktree + agent, started right away.
 #[tauri::command]
-async fn spawn_worktree_agent(app: AppHandle, state: State<'_, AppState>, req: CreateWorktreeReq) -> Result<WorktreeInfo, String> {
-    let pdir = worktree::project_dir(&maestro_home(&app)?, &req.project_root);
+async fn create_agent(app: AppHandle, state: State<'_, AppState>, req: CreateAgentReq) -> Result<WorktreeInfo, String> {
+    let pdir = worktree::project_dir(&home(&app)?, &req.project_root);
     let (path, branch) = worktree::create(&req.project_root, &pdir, &req.branch_name, &req.base_branch)?;
     let path = worktree::norm(&path);
-    let start = StartSessionReq { worktree_path: path.clone(), adapter_id: req.adapter_id, cols: req.cols, rows: req.rows };
-    match start_session(app, state, start).await {
-        Ok(s) => Ok(WorktreeInfo { path, branch, session: Some(s) }),
+    let f = Files::new(&pdir, &path);
+    let meta = AgentMeta { adapter_id: req.adapter_id, permission_mode: req.permission_mode, cli_session_id: None };
+    let started = f.write_meta(&meta).and_then(|_| Agent::spawn(app.clone(), &path, Files::new(&pdir, &path), meta));
+    match started {
+        Ok(a) => {
+            state.agents.lock().unwrap().insert(path.to_lowercase(), Arc::new(a));
+            Ok(info(&state, &f, path, branch))
+        }
         Err(e) => {
-            // don't leave an orphan worktree behind a failed spawn
+            // don't leave an orphan worktree behind a failed start
             let _ = worktree::discard(&req.project_root, &path, &branch);
+            let _ = std::fs::remove_file(&f.meta);
             Err(e)
         }
     }
 }
 
-/// Kill any agent in it, then `git worktree remove --force` + delete the branch.
+/// Sends one turn, starting (or resuming) the agent first if it isn't running.
 #[tauri::command]
-async fn discard_worktree(state: State<'_, AppState>, project_root: String, worktree_path: String, branch: String) -> Result<(), String> {
-    let ids: Vec<String> = state.sessions.lock().unwrap().iter()
-        .filter(|(_, s)| s.worktree_path.eq_ignore_ascii_case(&worktree_path))
-        .map(|(id, _)| id.clone()).collect();
-    for id in &ids {
-        if let Some(s) = state.sessions.lock().unwrap().remove(id) {
-            s.pty.kill();
+async fn send_message(app: AppHandle, state: State<'_, AppState>, project_root: String, worktree_path: String, text: String, files_attached: Vec<String>) -> Result<(), String> {
+    let agent = match state.get(&worktree_path).filter(|a| a.alive()) {
+        Some(a) => a,
+        None => {
+            let f = files(&app, &project_root, &worktree_path)?;
+            let meta = f.read_meta().ok_or("이 워크트리에는 에이전트 설정이 없습니다")?;
+            let a = Arc::new(Agent::spawn(app.clone(), &worktree_path, f, meta)?);
+            state.agents.lock().unwrap().insert(worktree_path.to_lowercase(), a.clone());
+            a
         }
-    }
-    if !ids.is_empty() {
-        std::thread::sleep(Duration::from_millis(300)); // let the process release file handles (Windows)
-    }
-    worktree::discard(&project_root, &worktree_path, &branch)
+    };
+    agent.send(&text, &files_attached)
 }
 
-/// Stops the process but keeps the worktree.
+/// Stops the current turn by ending the process; the next message resumes the conversation.
 #[tauri::command]
-fn kill_session(state: State<AppState>, session_id: String) -> Result<(), String> {
-    state.get(&session_id)?.pty.kill();
-    Ok(())
-}
-
-// ---------- terminal I/O ----------
-
-/// Solo/Tutti: same prompt to every bound session, wrapped in bracketed paste so
-/// embedded newlines don't submit early.
-#[tauri::command]
-async fn dispatch_prompt_to_sessions(state: State<'_, AppState>, session_ids: Vec<String>, prompt: String, context_files: Vec<String>) -> Result<(), String> {
-    let refs: String = context_files.iter().map(|p| format!("@{p} ")).collect();
-    let paste = format!("\x1b[200~{refs}{prompt}\x1b[201~");
-    let sessions = session_ids.iter().map(|id| state.get(id)).collect::<Result<Vec<_>, _>>()?;
-    for s in &sessions {
-        s.pty.write(paste.as_bytes())?;
+fn stop_agent(state: State<AppState>, worktree_path: String) {
+    if let Some(a) = state.get(&worktree_path) {
+        a.kill();
     }
-    // TUIs can treat Enter arriving in the same read as the paste as part of it
-    std::thread::sleep(Duration::from_millis(60));
-    for s in &sessions {
-        s.pty.write(b"\r")?;
-    }
-    Ok(())
-}
-
-#[tauri::command]
-fn write_raw_stdin(state: State<AppState>, session_id: String, data_b64: String) -> Result<(), String> {
-    let bytes = B64.decode(data_b64).map_err(|e| e.to_string())?;
-    state.get(&session_id)?.pty.write(&bytes)
-}
-
-#[tauri::command]
-fn resize_pty(state: State<AppState>, session_id: String, cols: u16, rows: u16) -> Result<(), String> {
-    state.get(&session_id)?.pty.resize(cols, rows)
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Scrollback {
-    data_b64: String,
+struct TranscriptRes {
+    events: Vec<Value>,
     seq: u64,
 }
 
 #[tauri::command]
-fn get_session_scrollback(state: State<AppState>, session_id: String) -> Result<Scrollback, String> {
-    let s = state.get(&session_id)?;
-    let sb = s.pty.scrollback.lock().unwrap();
-    Ok(Scrollback { data_b64: B64.encode(&sb.buf), seq: sb.total })
+async fn get_transcript(app: AppHandle, project_root: String, worktree_path: String) -> Result<TranscriptRes, String> {
+    let events = files(&app, &project_root, &worktree_path)?.read_transcript();
+    Ok(TranscriptRes { seq: events.len() as u64, events })
+}
+
+/// Kill the agent, `git worktree remove --force`, delete the branch and the agent's files.
+#[tauri::command]
+async fn discard_worktree(app: AppHandle, state: State<'_, AppState>, project_root: String, worktree_path: String, branch: String) -> Result<(), String> {
+    if let Some(a) = state.agents.lock().unwrap().remove(&worktree_path.to_lowercase()) {
+        a.kill();
+        std::thread::sleep(Duration::from_millis(300)); // let the process release file handles (Windows)
+    }
+    worktree::discard(&project_root, &worktree_path, &branch)?;
+    let f = files(&app, &project_root, &worktree_path)?;
+    let _ = std::fs::remove_file(f.meta);
+    let _ = std::fs::remove_file(f.transcript);
+    Ok(())
 }
 
 // ---------- right panel: files & changes ----------
@@ -326,7 +249,7 @@ async fn git_diff_file(worktree_path: String, file: String) -> Result<String, St
 // ---------- canvas ----------
 
 fn canvas_path(app: &AppHandle, project_root: &str) -> Result<PathBuf, String> {
-    Ok(worktree::project_dir(&maestro_home(app)?, project_root).join("canvas_state.json"))
+    Ok(worktree::project_dir(&home(app)?, project_root).join("canvas_state.json"))
 }
 
 #[tauri::command]
@@ -352,14 +275,11 @@ fn main() {
             add_repo,
             remove_repo,
             list_worktrees,
-            start_session,
-            spawn_worktree_agent,
+            create_agent,
+            send_message,
+            stop_agent,
+            get_transcript,
             discard_worktree,
-            kill_session,
-            dispatch_prompt_to_sessions,
-            write_raw_stdin,
-            resize_pty,
-            get_session_scrollback,
             list_dir,
             git_status,
             git_diff_file,
@@ -371,8 +291,8 @@ fn main() {
         .run(|app, event| {
             // no orphan agents after the window closes
             if let tauri::RunEvent::Exit = event {
-                for s in app.state::<AppState>().sessions.lock().unwrap().values() {
-                    s.pty.kill();
+                for a in app.state::<AppState>().agents.lock().unwrap().values() {
+                    a.kill();
                 }
             }
         });

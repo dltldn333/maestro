@@ -1,12 +1,16 @@
 // Subset of PRD 6.3 implemented so far.
 import type { Edge, Node } from "@xyflow/react";
 
-export type AgentStatus = "SPAWNING" | "RUNNING" | "NEEDS_INPUT" | "IDLE" | "ERROR" | "TERMINATED";
-export type AgentState = { kind: AgentStatus; exitCode?: number | null };
+export type AgentStatus = "RUNNING" | "IDLE" | "TERMINATED";
 
 export type Repo = { root: string; name: string; defaultBranch: string };
-export type SessionInfo = { sessionId: string; adapterId: string; state: AgentState; allocatedPort: number | null };
-export type WorktreeInfo = { path: string; branch: string; session: SessionInfo | null };
+export type WorktreeInfo = {
+  path: string;
+  branch: string;
+  adapterId: string | null;
+  permissionMode: string | null;
+  state: { kind: AgentStatus };
+};
 
 export type PromptInputBlockData = {
   label: string;
@@ -14,10 +18,13 @@ export type PromptInputBlockData = {
   lastSentPrompt?: string;
 };
 
-// Session and status live in the store, keyed by worktreePath, so a saved canvas never holds stale session ids.
+export type TerminalSize = "S" | "M" | "L";
+
+// Agent status lives in the store, keyed by worktreePath.
 export type PtyTerminalNodeData = {
   worktreePath: string;
   branchName: string;
+  size?: TerminalSize; // only presets, no free resizing
 };
 
 export type PromptFlowNode = Node<PromptInputBlockData, "prompt_input_primitive">;
@@ -35,5 +42,7 @@ export interface CanvasStateSchema {
   edges: Array<Pick<CanvasEdge, "id" | "source" | "target" | "data">>;
 }
 
-export type PtyStdoutBatchEvent = { sessionId: string; dataB64: string; strippedTail: string[]; seq: number };
-export type AgentStateEvent = { sessionId: string; state: AgentState };
+/** One transcript line: Claude stream-json events plus Maestro's own user_input / stderr / exit. */
+export type ChatEvent = { type: string; [k: string]: any };
+export type AgentEventPayload = { worktreePath: string; seq: number; event: ChatEvent };
+export type AgentStatePayload = { worktreePath: string; state: { kind: AgentStatus } };

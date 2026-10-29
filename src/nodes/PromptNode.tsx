@@ -19,14 +19,14 @@ export function PromptNode({ id, data }: NodeProps<PromptFlowNode>) {
   const targets = edges
     .filter((e) => e.source === id)
     .map((e) => nodes.find((n) => n.id === e.target))
-    .flatMap((n) => (n?.type === "pty_terminal_node" ? worktrees.filter((w) => w.path === n.data.worktreePath) : []))
-    .flatMap((w) => (w.sessionId && w.status !== "TERMINATED" ? [w.sessionId] : []));
+    .flatMap((n) => (n?.type === "pty_terminal_node" ? worktrees.filter((w) => w.path === n.data.worktreePath) : []));
 
   const send = async () => {
     if (!text.trim()) return;
-    if (!targets.length) return setErr("실행 중인 터미널에 선을 연결하세요");
+    if (!targets.length) return setErr("CLI 블록에 선을 연결하세요");
     try {
-      await ipc.dispatchPrompt(targets, text, attached);
+      // stopped agents are resumed by the backend on send
+      await Promise.all(targets.map((w) => ipc.send(w.root, w.path, text, attached)));
       updateNodeData(id, { lastSentPrompt: text });
       setText("");
       setErr("");
@@ -73,7 +73,7 @@ export function PromptNode({ id, data }: NodeProps<PromptFlowNode>) {
         placeholder="지시사항 입력 · Ctrl+Enter 전송 · 파일을 끌어와 첨부"
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+          if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.nativeEvent.isComposing) {
             e.preventDefault();
             send();
           }

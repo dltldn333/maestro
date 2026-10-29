@@ -2,8 +2,8 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useStore, type Worktree } from "./store";
 import type { Repo } from "./types";
 
-const ADAPTER_LABEL: Record<string, string> = { "claude-code": "Claude Code", shell: "Shell" };
-const STATUS_LABEL: Record<string, string> = { RUNNING: "작업 중", IDLE: "대기", TERMINATED: "중지됨" };
+const ADAPTER_LABEL: Record<string, string> = { "claude-code": "Claude Code" };
+const STATUS_LABEL: Record<string, string> = { RUNNING: "작업 중", IDLE: "대기", TERMINATED: "꺼짐" };
 
 export function StatusDot({ w }: { w: Worktree }) {
   return <span className="dot" data-status={w.status} data-unread={w.unread || undefined} />;
@@ -48,7 +48,7 @@ export function Sidebar({ onNewWorktree }: { onNewWorktree: (repo: Repo) => void
                 </button>
                 <button
                   className="icon"
-                  title="새 워크트리"
+                  title="새 CLI 블록"
                   onClick={(e) => {
                     e.stopPropagation();
                     setActive(r.root);
@@ -73,13 +73,13 @@ export function Sidebar({ onNewWorktree }: { onNewWorktree: (repo: Repo) => void
                   <span className="wt-branch">{w.branch}</span>
                   <span className="spacer" />
                   <span className="muted small">
-                    {w.status === "TERMINATED" ? STATUS_LABEL.TERMINATED : `${ADAPTER_LABEL[w.adapterId ?? ""] ?? ""} · ${STATUS_LABEL[w.status] ?? w.status}`}
+                    {[ADAPTER_LABEL[w.adapterId ?? ""], STATUS_LABEL[w.status]].filter(Boolean).join(" · ")}
                   </span>
                 </div>
               ))}
               {!wts.length && (
                 <div className="wt-empty muted small" onClick={() => onNewWorktree(r)}>
-                  + 첫 워크트리 만들기
+                  + CLI 블록 만들기
                 </div>
               )}
             </section>
@@ -87,7 +87,7 @@ export function Sidebar({ onNewWorktree }: { onNewWorktree: (repo: Repo) => void
         })}
         {!repos.length && (
           <div className="sb-empty">
-            <p className="muted">로컬 Git 저장소를 추가하면 에이전트마다 격리된 워크트리를 만들 수 있어요.</p>
+            <p className="muted">로컬 Git 저장소를 추가하면 CLI 블록마다 격리된 워크트리에서 에이전트를 실행할 수 있어요.</p>
             <button onClick={pickRepo}>저장소 추가</button>
           </div>
         )}

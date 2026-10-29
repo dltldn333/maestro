@@ -6,11 +6,9 @@ export type Worktree = {
   root: string;
   path: string;
   branch: string;
-  sessionId?: string;
   adapterId?: string;
-  port?: number;
   status: AgentStatus;
-  unread: boolean; // went idle/finished while not selected (Orca-style attention dot)
+  unread: boolean; // finished a turn while not selected (Orca-style attention dot)
 };
 
 type Store = {
@@ -27,8 +25,7 @@ type Store = {
   setActive: (root: string) => void;
   select: (path: string | null) => void;
   upsert: (root: string, info: WorktreeInfo) => void;
-  patch: (path: string, p: Partial<Worktree>) => void;
-  onAgentState: (sessionId: string, status: AgentStatus) => void;
+  onAgentState: (path: string, status: AgentStatus) => void;
   remove: (path: string) => void;
 };
 
@@ -36,12 +33,12 @@ const fromInfo = (root: string, w: WorktreeInfo, prev?: Worktree): Worktree => (
   root,
   path: w.path,
   branch: w.branch,
-  sessionId: w.session?.sessionId,
-  adapterId: w.session?.adapterId ?? prev?.adapterId,
-  port: w.session?.allocatedPort ?? undefined,
-  status: w.session?.state.kind ?? "TERMINATED",
+  adapterId: w.adapterId ?? undefined,
+  status: w.state.kind,
   unread: prev?.unread ?? false,
 });
+
+const same = (a: string, b: string | null) => !!b && a.toLowerCase() === b.toLowerCase();
 
 export const useStore = create<Store>((set, get) => ({
   repos: [],
@@ -87,13 +84,10 @@ export const useStore = create<Store>((set, get) => ({
       const next = fromInfo(root, info, prev);
       return { worktrees: prev ? s.worktrees.map((w) => (w.path === info.path ? next : w)) : [...s.worktrees, next] };
     }),
-  patch: (path, p) => set((s) => ({ worktrees: s.worktrees.map((w) => (w.path === path ? { ...w, ...p } : w)) })),
-  onAgentState: (sessionId, status) =>
+  onAgentState: (path, status) =>
     set((s) => ({
       worktrees: s.worktrees.map((w) =>
-        w.sessionId !== sessionId
-          ? w
-          : { ...w, status, unread: w.unread || (status !== "RUNNING" && w.path !== s.selectedPath) },
+        !same(w.path, path) ? w : { ...w, status, unread: w.unread || (status !== "RUNNING" && w.path !== s.selectedPath) },
       ),
     })),
   remove: (path) => set((s) => ({ worktrees: s.worktrees.filter((w) => w.path !== path), selectedPath: s.selectedPath === path ? null : s.selectedPath })),

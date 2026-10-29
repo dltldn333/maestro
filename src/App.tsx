@@ -1,20 +1,21 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Canvas } from "./Canvas";
-import { NewWorktreeDialog } from "./NewWorktreeDialog";
+import { NewAgentDialog } from "./NewAgentDialog";
 import { RightPanel } from "./RightPanel";
 import { Sidebar } from "./Sidebar";
 import { useStore } from "./store";
-import type { AgentStateEvent, Repo } from "./types";
+import type { AgentStatePayload, Repo } from "./types";
 
-// Orca-style shell: repos/worktrees sidebar | CLI canvas | files & changes panel.
+// Orca-style shell: repos/agents sidebar | CLI canvas | files & changes panel.
 export default function App() {
-  const { activeRoot, error, loadRepos, onAgentState, setError } = useStore();
+  const { repos, activeRoot, error, loadRepos, onAgentState, setError } = useStore();
   const [dialogRepo, setDialogRepo] = useState<Repo | null>(null);
+  const activeRepo = repos.find((r) => r.root === activeRoot);
 
   useEffect(() => {
     loadRepos().catch(setError);
-    const un = listen<AgentStateEvent>("agent://state", (e) => onAgentState(e.payload.sessionId, e.payload.state.kind));
+    const un = listen<AgentStatePayload>("agent://state", (e) => onAgentState(e.payload.worktreePath, e.payload.state.kind));
     return () => void un.then((f) => f());
   }, []);
 
@@ -23,7 +24,7 @@ export default function App() {
       <Sidebar onNewWorktree={setDialogRepo} />
       <main className="stage">
         {activeRoot ? (
-          <Canvas key={activeRoot} root={activeRoot} />
+          <Canvas key={activeRoot} root={activeRoot} onNewAgent={() => activeRepo && setDialogRepo(activeRepo)} />
         ) : (
           <div className="empty">
             <p>왼쪽에서 Git 저장소를 추가하세요.</p>
@@ -32,7 +33,7 @@ export default function App() {
         )}
       </main>
       <RightPanel />
-      {dialogRepo && <NewWorktreeDialog repo={dialogRepo} onClose={() => setDialogRepo(null)} />}
+      {dialogRepo && <NewAgentDialog repo={dialogRepo} onClose={() => setDialogRepo(null)} />}
       {error && (
         <div className="toast" onClick={() => setError("")} title="닫기">
           {error}
