@@ -1,0 +1,61 @@
+/* Theme tokens (PRD 3.3). Components read only these variables. */
+:root {
+  --mae-canvas-bg: #0f1115;
+  --mae-text: #e6e8ec;
+  --mae-muted: #8a8f98;
+  --mae-err: #ef4444;
+  --mae-radius: 10px;
+  --mae-font: "Pretendard", "Segoe UI", system-ui, sans-serif;
+  --mae-toolbar-bg: #151821;
+  --mae-border: #2c313c;
+  --mae-prompt-bg: #14171d;
+  --mae-prompt-border: #3b82f6;
+  --mae-terminal-bg: #000000;
+  --mae-terminal-border: #2c313c;
+  --mae-status-running: #3b82f6;
+  --mae-status-terminated: #6b7280;
+}
+
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body { background: var(--mae-canvas-bg); color: var(--mae-text); font: 13px var(--mae-font); }
+button, input, select, textarea { font: inherit; color: inherit; }
+button {
+  background: #232834; border: 1px solid var(--mae-border); border-radius: 6px; padding: 4px 10px; cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: var(--mae-prompt-border); }
+button:disabled { opacity: .5; cursor: default; }
+input, select, textarea {
+  background: #0c0e12; border: 1px solid var(--mae-border); border-radius: 6px; padding: 4px 8px;
+}
+.muted { color: var(--mae-muted); }
+.err { color: var(--mae-err); max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.spacer { flex: 1; }
+
+.app { display: flex; flex-direction: column; height: 100%; }
+.toolbar {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  background: var(--mae-toolbar-bg); border-bottom: 1px solid var(--mae-border);
+}
+.toolbar .brand { margin-right: 8px; }
+.toolbar .path { width: 340px; }
+.toolbar .short { width: 110px; }
+.toolbar .sep { width: 1px; height: 20px; background: var(--mae-border); }
+.toolbar .root { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stage { flex: 1; position: relative; }
+.empty { height: 100%; display: grid; place-content: center; text-align: center; }
+
+.node { width: 100%; height: 100%; display: flex; flex-direction: column; border-radius: var(--mae-radius); overflow: hidden; }
+.node header { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--mae-border); }
+.node header button { padding: 2px 8px; font-size: 12px; }
+
+.node-prompt { width: 320px; background: var(--mae-prompt-bg); border: 1px solid var(--mae-prompt-border); }
+.node-prompt textarea { margin: 8px; resize: vertical; }
+.node-prompt footer { display: flex; align-items: center; gap: 8px; padding: 0 8px 8px; }
+.node-prompt footer > span { flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.node-terminal { background: var(--mae-terminal-bg); border: 1px solid var(--mae-terminal-border); }
+.node-terminal .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--mae-status-running); }
+.node-terminal[data-status="TERMINATED"] .dot { background: var(--mae-status-terminated); }
+.xterm-host { flex: 1; min-height: 0; padding: 4px; }
+.lod { flex: 1; padding: 12px; font: 14px "Cascadia Mono", Consolas, monospace; white-space: pre; overflow: hidden; }
