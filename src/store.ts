@@ -1,12 +1,21 @@
 import { create } from "zustand";
+import { useShallow } from "zustand/react/shallow";
 import { ipc } from "./ipc";
-import type { AgentStatus, Repo, WorktreeInfo } from "./types";
+import type { AgentStatus, Approval, CliStatus, Repo, WorktreeInfo } from "./types";
 
 export type Worktree = {
   root: string;
   path: string;
   branch: string;
+  /** user-given name, falling back to the branch */
+  name: string;
+  description?: string;
   adapterId?: string;
+  isMaestro: boolean;
+  workers: string[];
+  refs: string[];
+  external: boolean;
+  personas: string[];
   status: AgentStatus;
   unread: boolean; // finished a turn while not selected (Orca-style attention dot)
 };
@@ -27,13 +36,25 @@ type Store = {
   upsert: (root: string, info: WorktreeInfo) => void;
   onAgentState: (path: string, status: AgentStatus) => void;
   remove: (path: string) => void;
+  cli: CliStatus | null; // which agent CLIs are installed
+  loadCli: () => Promise<CliStatus>;
+  approvals: Approval[]; // permission prompts waiting for an answer, from the agents' hooks
+  addApproval: (a: Approval) => void;
+  dropApproval: (id: number) => void;
 };
 
 const fromInfo = (root: string, w: WorktreeInfo, prev?: Worktree): Worktree => ({
   root,
   path: w.path,
   branch: w.branch,
+  name: w.name || w.branch,
+  description: w.description ?? undefined,
   adapterId: w.adapterId ?? undefined,
+  isMaestro: w.isMaestro,
+  workers: w.workers,
+  refs: w.refs,
+  external: w.external,
+  personas: w.personas,
   status: w.state.kind,
   unread: prev?.unread ?? false,
 });
@@ -51,7 +72,11 @@ export const useStore = create<Store>((set, get) => ({
   loadRepos: async () => {
     const repos = await ipc.listRepos();
     set({ repos, activeRoot: get().activeRoot ?? repos[0]?.root ?? null });
-    await Promise.all(repos.map((r) => get().refreshWorktrees(r.root)));
+    // one unreadable repo (moved, not a git repo anymore) must not keep the others from loading
+    const failed = (await Promise.allSettled(repos.map((r) => get().refreshWorktrees(r.root))))
+      .map((res, i) => (res.status === "rejected" ? `${repos[i].name}: ${res.reason}` : ""))
+      .filter(Boolean);
+    if (failed.length) get().setError(`워크트리를 읽지 못한 저장소가 있어요\n${failed.join("\n")}`);
   },
   addRepo: async (path) => {
     const repo = await ipc.addRepo(path);
@@ -91,6 +116,16 @@ export const useStore = create<Store>((set, get) => ({
       ),
     })),
   remove: (path) => set((s) => ({ worktrees: s.worktrees.filter((w) => w.path !== path), selectedPath: s.selectedPath === path ? null : s.selectedPath })),
+  cli: null,
+  loadCli: async () => {
+    const cli = await ipc.cliStatus();
+    set({ cli });
+    return cli;
+  },
+  approvals: [],
+  addApproval: (a) => set((s) => ({ approvals: s.approvals.some((x) => x.id === a.id) ? s.approvals : [...s.approvals, a] })),
+  dropApproval: (id) => set((s) => ({ approvals: s.approvals.filter((a) => a.id !== id) })),
 }));
 
 export const useWorktree = (path: string) => useStore((s) => s.worktrees.find((w) => w.path === path));
+export const useApprovals = (path: string) => useStore(useShallow((s) => s.approvals.filter((a) => same(a.worktreePath, path))));

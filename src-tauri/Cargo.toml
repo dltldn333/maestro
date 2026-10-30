@@ -2,6 +2,8 @@
 name = "maestro"
 version = "0.1.0"
 edition = "2021"
+# src/bin/maestro-cli.rs is the agents' `maestro` command; `cargo run` / tauri dev start the app
+default-run = "maestro"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -11,3 +13,5 @@ tauri = { version = "2", features = [] }
 serde = { version = "1.0.190", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-dialog = "2"
+portable-pty = "0.9"
+base64 = "0.22"

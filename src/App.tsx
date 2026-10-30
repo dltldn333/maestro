@@ -5,9 +5,12 @@ import { Canvas } from "./Canvas";
 import { NewAgentDialog } from "./NewAgentDialog";
 import { RightPanel } from "./RightPanel";
 import { SettingsDialog } from "./SettingsDialog";
+import { AgentFull } from "./AgentFull";
+import { useSettings } from "./settings";
 import { Sidebar } from "./Sidebar";
 import { useStore } from "./store";
-import type { AgentStatePayload, Repo } from "./types";
+import { ipc } from "./ipc";
+import type { AgentStatePayload, Approval, Repo } from "./types";
 
 // Per-viewer panel visibility; storage may be unavailable, so default to shown.
 function usePanelPref(key: string) {
@@ -39,19 +42,34 @@ function PanelIcon({ side }: { side: "left" | "right" }) {
   );
 }
 
-// Orca-style shell: repos/agents sidebar | CLI canvas | files & changes panel.
+// Orca-style shell: repos/agents sidebar | agent canvas | files & changes panel.
 export default function App() {
   const { repos, activeRoot, error, loadRepos, onAgentState, setError } = useStore();
-  const [dialogRepo, setDialogRepo] = useState<Repo | null>(null);
+  // new worktree / worker / Maestro dialog
+  const [dialog, setDialog] = useState<{ repo: Repo; maestro?: boolean; parentPath?: string } | null>(null);
+  const setDialogRepo = (repo: Repo | null) => setDialog(repo && { repo });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showLeft, setShowLeft] = usePanelPref("maestro.showLeft");
   const [showRight, setShowRight] = usePanelPref("maestro.showRight");
   const activeRepo = repos.find((r) => r.root === activeRoot);
+  // the selected worktree's canvas, or the project canvas when none is selected
+  const agentLayout = useSettings((s) => s.agentLayout);
+  const scope = useStore((s) => s.worktrees.find((w) => w.path === s.selectedPath && w.root === activeRoot)?.path);
 
   useEffect(() => {
     loadRepos().catch(setError);
-    const un = listen<AgentStatePayload>("agent://state", (e) => onAgentState(e.payload.worktreePath, e.payload.state.kind));
-    return () => void un.then((f) => f());
+    // no agent CLI at all → nothing works yet; open settings, where they can be installed
+    useStore.getState().loadCli().then((c) => !c.agents.some((a) => a.installed) && setSettingsOpen(true)).catch(() => {});
+    const { addApproval, dropApproval } = useStore.getState();
+    ipc.listApprovals().then((list) => list.forEach(addApproval)).catch(() => {});
+    const uns = [
+      listen<AgentStatePayload>("agent://state", (e) => onAgentState(e.payload.worktreePath, e.payload.state.kind)),
+      listen<Approval>("agent://approval", (e) => addApproval(e.payload)),
+      listen<{ id: number }>("agent://approval-done", (e) => dropApproval(e.payload.id)),
+      // an agent ran `maestro worktree create`
+      listen<string>("maestro://worktrees", (e) => useStore.getState().refreshWorktrees(e.payload).catch(setError)),
+    ];
+    return () => uns.forEach((un) => void un.then((f) => f()));
   }, []);
 
   return (
@@ -68,14 +86,7 @@ export default function App() {
         <button className="icon" data-on={showLeft || undefined} title={showLeft ? "왼쪽 패널 숨기기" : "왼쪽 패널 보이기"} onClick={() => setShowLeft(!showLeft)}>
           <PanelIcon side="left" />
         </button>
-        {activeRepo && <span className="muted" data-tauri-drag-region>{activeRepo.name}</span>}
         <span className="spacer" data-tauri-drag-region />
-        <button className="icon" title="설정" onClick={() => setSettingsOpen(true)}>
-          <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
-            <circle cx="10" cy="10" r="2.5" />
-            <path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.7 4.7l1.4 1.4M13.9 13.9l1.4 1.4M4.7 15.3l1.4-1.4M13.9 6.1l1.4-1.4" strokeLinecap="round" />
-          </svg>
-        </button>
         <button className="icon" data-on={showRight || undefined} title={showRight ? "오른쪽 패널 숨기기" : "오른쪽 패널 보이기"} onClick={() => setShowRight(!showRight)}>
           <PanelIcon side="right" />
         </button>
@@ -92,10 +103,20 @@ export default function App() {
         </div>
       </header>
       <div className="shell">
-        <Sidebar onNewWorktree={setDialogRepo} />
+        <Sidebar onNewWorktree={setDialogRepo} onOpenSettings={() => setSettingsOpen(true)} />
         <main className="stage">
-          {activeRoot ? (
-            <Canvas key={activeRoot} root={activeRoot} onNewAgent={() => activeRepo && setDialogRepo(activeRepo)} />
+          {activeRoot && scope && agentLayout === "full" ? (
+            <AgentFull key={scope} root={activeRoot} path={scope} />
+          ) : activeRoot ? (
+            <Canvas
+              key={`${activeRoot}|${scope ?? ""}`}
+              root={activeRoot}
+              scope={scope}
+              onNewAgent={(o) => activeRepo && setDialog({ repo: activeRepo, ...o })}
+              onNewMaestro={() => activeRepo && setDialog({ repo: activeRepo, maestro: true })}
+              // the sidebar's settings button is out of reach while it's hidden → show one by the zoom bar
+              onOpenSettings={showLeft ? undefined : () => setSettingsOpen(true)}
+            />
           ) : (
             <div className="empty">
               <p>왼쪽에서 Git 저장소를 추가하세요.</p>
@@ -105,7 +126,7 @@ export default function App() {
         </main>
         <RightPanel />
       </div>
-      {dialogRepo && <NewAgentDialog repo={dialogRepo} onClose={() => setDialogRepo(null)} />}
+      {dialog && <NewAgentDialog {...dialog} onClose={() => setDialog(null)} />}
       {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
       {error && (
         <div className="toast" onClick={() => setError("")} title="닫기">

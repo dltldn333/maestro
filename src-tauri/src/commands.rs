@@ -1,0 +1,90 @@
+//! Custom slash commands and skills the chat composer can suggest, read from the same places
+//! Claude Code reads them: `.claude/commands/**/*.md` and `.claude/skills/*/SKILL.md`, user and project.
+//! shortcut: plugin-provided commands aren't listed; they still work when typed.
+
+use serde::Serialize;
+use std::path::Path;
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct SlashCommand {
+    pub name: String,
+    pub description: String,
+    pub source: &'static str,
+}
+
+/// `description:` from YAML frontmatter, else the first non-empty body line.
+fn describe(md: &str) -> String {
+    let mut lines = md.lines();
+    if md.starts_with("---") {
+        lines.next();
+        for l in lines.by_ref() {
+            if l.trim() == "---" {
+                break;
+            }
+            if let Some(d) = l.strip_prefix("description:") {
+                return d.trim().trim_matches('"').to_string();
+            }
+        }
+    }
+    lines.map(str::trim).find(|l| !l.is_empty()).unwrap_or("").trim_start_matches('#').trim().to_string()
+}
+
+/// commands/a.md → "a", commands/git/pr.md → "git:pr" (Claude's namespacing)
+fn walk_commands(dir: &Path, prefix: &str, source: &'static str, out: &mut Vec<SlashCommand>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let p = e.path();
+        let stem = p.file_stem().unwrap_or_default().to_string_lossy().to_string();
+        if p.is_dir() {
+            walk_commands(&p, &format!("{prefix}{stem}:"), source, out);
+        } else if p.extension().is_some_and(|x| x == "md") {
+            let description = describe(&std::fs::read_to_string(&p).unwrap_or_default());
+            out.push(SlashCommand { name: format!("{prefix}{stem}"), description, source });
+        }
+    }
+}
+
+fn skills(dir: &Path, source: &'static str, out: &mut Vec<SlashCommand>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let Ok(md) = std::fs::read_to_string(e.path().join("SKILL.md")) else { continue };
+        out.push(SlashCommand { name: e.file_name().to_string_lossy().into(), description: describe(&md), source });
+    }
+}
+
+pub fn list(home: &Path, worktree: &Path) -> Vec<SlashCommand> {
+    let mut out = vec![];
+    for (base, source) in [(worktree.join(".claude"), "프로젝트"), (home.join(".claude"), "사용자")] {
+        walk_commands(&base.join("commands"), "", source, &mut out);
+        skills(&base.join("skills"), source, &mut out);
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out.dedup_by(|b, a| a.name == b.name); // project entries come first and win
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn describes_from_frontmatter_or_first_line() {
+        assert_eq!(describe("---\nname: x\ndescription: \"Ship it\"\n---\nbody"), "Ship it");
+        assert_eq!(describe("---\nname: x\n---\n\n# Title here\nmore"), "Title here");
+        assert_eq!(describe("plain line\nnext"), "plain line");
+    }
+
+    #[test]
+    fn lists_namespaced_commands_and_skills() {
+        let root = std::env::temp_dir().join(format!("maestro-cmds-{}", std::process::id()));
+        let wt = root.join("wt");
+        std::fs::create_dir_all(wt.join(".claude/commands/git")).unwrap();
+        std::fs::create_dir_all(wt.join(".claude/skills/deploy")).unwrap();
+        std::fs::write(wt.join(".claude/commands/git/pr.md"), "Open a PR").unwrap();
+        std::fs::write(wt.join(".claude/skills/deploy/SKILL.md"), "---\ndescription: Deploy\n---").unwrap();
+        let got = list(&root.join("nohome"), &wt);
+        assert_eq!(got.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["deploy", "git:pr"]);
+        assert_eq!(got[1].description, "Open a PR");
+        let _ = std::fs::remove_dir_all(root);
+    }
+}

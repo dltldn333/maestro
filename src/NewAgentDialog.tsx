@@ -2,26 +2,55 @@ import { useState } from "react";
 import { ipc } from "./ipc";
 import { useSettings } from "./settings";
 import { useStore } from "./store";
-import type { Repo } from "./types";
+import type { CliStatus, Repo } from "./types";
+import claudeLogo from "./assets/agents/claude-code.svg";
+import antigravityLogo from "./assets/agents/antigravity.png";
+import codexLogo from "./assets/agents/codex.svg";
 
-export const AGENTS: Array<{ id: string; label: string; disabled?: boolean }> = [
-  { id: "claude-code", label: "Claude Code" },
-  { id: "codex", label: "Codex (준비 중)", disabled: true },
+// Brand marks: Claude and OpenAI from simple-icons, Antigravity from the icon its installer ships.
+export const AGENTS: Array<{ id: string; label: string; logo: string; disabled?: boolean }> = [
+  { id: "claude-code", label: "Claude Code", logo: claudeLogo },
+  { id: "antigravity", label: "Antigravity", logo: antigravityLogo },
+  { id: "codex", label: "Codex (준비 중)", logo: codexLogo, disabled: true },
 ];
 
-const PERMISSIONS = [
+export const agentLabel = (id?: string) => AGENTS.find((a) => a.id === id)?.label.replace(/ \(.*\)$/, "") ?? id ?? "";
+
+export const AgentLogo = ({ id, size = 16 }: { id?: string; size?: number }) => {
+  const a = AGENTS.find((x) => x.id === id);
+  return a ? <img className="agent-logo" src={a.logo} width={size} height={size} alt="" /> : null;
+};
+
+/** Can be picked for a new worktree: supported, installed, and not switched off in settings. */
+export const agentUsable = (id: string, cli: CliStatus | null, disabled: string[]) =>
+  !AGENTS.find((a) => a.id === id)?.disabled && !!cli?.agents.find((c) => c.id === id)?.installed && !disabled.includes(id);
+
+export const PERMISSIONS = [
   { id: "acceptEdits", label: "파일 수정만 자동 허용", hint: "명령 실행 등 나머지 권한이 필요한 도구는 거부돼요." },
   { id: "auto", label: "자동 판단", hint: "Claude가 안전하다고 판단한 작업을 자동으로 허용해요." },
   { id: "bypassPermissions", label: "모두 허용 (주의)", hint: "확인 없이 모든 명령을 실행해요. 격리된 워크트리라도 컴퓨터 전체에 영향을 줄 수 있어요." },
   { id: "plan", label: "계획만", hint: "파일을 바꾸지 않고 계획만 세워요." },
 ];
 
-/** New CLI block: pick an agent; Maestro makes its worktree and starts it. */
-export function NewAgentDialog({ repo, onClose }: { repo: Repo; onClose: () => void }) {
+/** New agent block: pick an agent; Maestro makes its worktree and starts it. */
+export function NewAgentDialog({ repo, maestro, parentPath, onClose }: {
+  repo: Repo;
+  /** create the project's Maestro (coordinator on the project folder) instead of a worktree */
+  maestro?: boolean;
+  /** make the new worktree a worker of this one */
+  parentPath?: string;
+  onClose: () => void;
+}) {
   const count = useStore((s) => s.worktrees.filter((w) => w.root === repo.root).length);
-  const { upsert, select } = useStore();
-  const [agent, setAgent] = useState(useSettings.getState().defaultAgent);
-  const [perm, setPerm] = useState("acceptEdits");
+  const { upsert, cli } = useStore();
+  const { defaultAgent, defaultPermission, disabledAgents, agentModels } = useSettings();
+  const usable = (id: string) => agentUsable(id, cli, disabledAgents);
+  // the default ("auto" = first usable), unless it's been switched off or uninstalled since
+  const [agent, setAgent] = useState(() => (usable(defaultAgent) ? defaultAgent : (AGENTS.find((a) => usable(a.id))?.id ?? "claude-code")));
+  const agentMissing = !!cli && !usable(agent); // cli null = still checking
+  const [perm, setPerm] = useState(defaultPermission);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
   const [branch, setBranch] = useState(`agent-${count + 1}`);
   const [base, setBase] = useState(repo.defaultBranch);
   const [more, setMore] = useState(false);
@@ -33,9 +62,18 @@ export function NewAgentDialog({ repo, onClose }: { repo: Repo; onClose: () => v
     setBusy(true);
     setErr("");
     try {
-      const info = await ipc.createAgent({ projectRoot: repo.root, adapterId: agent, permissionMode: perm, branchName: branch.trim(), baseBranch: base.trim() || "HEAD" });
-      upsert(repo.root, info);
-      select(info.path);
+      const model = agentModels[agent] ?? "";
+      if (maestro) {
+        upsert(repo.root, await ipc.createMaestro({ projectRoot: repo.root, adapterId: agent, permissionMode: perm, model }));
+        return onClose();
+      }
+      const info = await ipc.createAgent({ projectRoot: repo.root, adapterId: agent, permissionMode: perm, branchName: branch.trim(), baseBranch: base.trim() || "HEAD", name, description, model });
+      upsert(repo.root, info); // the project canvas adds its card and pans to it; double-click to go in
+      if (parentPath) {
+        // made by dragging a line out of a card: it's that card's worker
+        await ipc.linkWorktrees(repo.root, parentPath, info.path);
+        await useStore.getState().refreshWorktrees(repo.root);
+      }
       onClose();
     } catch (e) {
       setErr(String(e));
@@ -46,14 +84,40 @@ export function NewAgentDialog({ repo, onClose }: { repo: Repo; onClose: () => v
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && !busy && onClose()}>
       <form className="modal" onSubmit={submit} onKeyDown={(e) => e.key === "Escape" && !busy && onClose()}>
-        <h3>새 CLI 블록 · {repo.name}</h3>
-        <div className="agent-pick">
-          {AGENTS.map((a) => (
-            <button type="button" key={a.id} disabled={a.disabled} data-on={a.id === agent || undefined} onClick={() => setAgent(a.id)}>
-              {a.label}
-            </button>
-          ))}
-        </div>
+        <h3>{maestro ? `♛ 마에스트로 · ${repo.name}` : parentPath ? `새 워커 · ${repo.name}` : `새 워크트리 · ${repo.name}`}</h3>
+        {maestro ? (
+          <p className="muted small">
+            프로젝트 폴더({repo.defaultBranch} 브랜치)에서 돌아가는 조율 에이전트예요. 일을 나눠 워커 워크트리에 맡기고, 결과를 모아 합쳐요.
+            원본 폴더에서 직접 실행되니 권한을 신중히 골라 주세요.
+          </p>
+        ) : (
+          <>
+            <label>
+              이름
+              <input autoFocus value={name} placeholder={`비우면 브랜치 이름(${branch})`} onChange={(e) => setName(e.target.value)} />
+            </label>
+            <label>
+              설명
+              <textarea rows={2} value={description} placeholder="이 워크트리에서 할 일 (선택)" onChange={(e) => setDescription(e.target.value)} />
+            </label>
+          </>
+        )}
+        <label>
+          에이전트
+          <span className="agent-select">
+            <AgentLogo id={agent} size={18} />
+            <select value={agent} onChange={(e) => setAgent(e.target.value)}>
+              {AGENTS.filter((a) => !disabledAgents.includes(a.id)).map((a) => {
+                const missing = !!cli && !cli.agents.find((c) => c.id === a.id)?.installed;
+                return (
+                  <option key={a.id} value={a.id} disabled={!usable(a.id)}>
+                    {a.label}{missing && !a.disabled ? " · 설치 필요" : ""}
+                  </option>
+                );
+              })}
+            </select>
+          </span>
+        </label>
         <label>
           권한
           <select value={perm} onChange={(e) => setPerm(e.target.value)}>
@@ -63,7 +127,7 @@ export function NewAgentDialog({ repo, onClose }: { repo: Repo; onClose: () => v
           </select>
           <span className="muted small">{PERMISSIONS.find((p) => p.id === perm)?.hint}</span>
         </label>
-        {more ? (
+        {maestro ? null : more ? (
           <>
             <label>
               브랜치
@@ -79,10 +143,11 @@ export function NewAgentDialog({ repo, onClose }: { repo: Repo; onClose: () => v
             브랜치 {branch} · 기준 {base} — 변경
           </button>
         )}
+        {agentMissing && <p className="err small">쓸 수 있는 에이전트가 아니에요. 설정 → 에이전트에서 설치하거나 켜 주세요.</p>}
         {err && <p className="err wrap">{err}</p>}
         <div className="modal-actions">
           <button type="button" disabled={busy} onClick={onClose}>취소</button>
-          <button type="submit" className="primary" autoFocus disabled={busy || !branch.trim()}>{busy ? "시작하는 중…" : "만들고 실행"}</button>
+          <button type="submit" className="primary" disabled={busy || !branch.trim() || agentMissing}>{busy ? "시작하는 중…" : "만들고 실행"}</button>
         </div>
       </form>
     </div>

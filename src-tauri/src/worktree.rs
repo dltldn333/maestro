@@ -69,24 +69,50 @@ pub fn create(root: &str, project_dir: &Path, branch: &str, base: &str) -> Resul
 }
 
 /// Maestro-managed worktrees of `root` as (path, branch).
-pub fn list(root: &str, project_dir: &Path) -> Result<Vec<(String, String)>, String> {
+/// Every linked worktree of the repo (path, branch): Maestro's own and any made elsewhere (git, other
+/// tools). The main checkout is left out (it's the project folder, where the Maestro runs), and so are
+/// entries whose folder is gone (`prunable`).
+pub fn list(root: &str) -> Result<Vec<(String, String)>, String> {
     let out = git(Path::new(root), &["worktree", "list", "--porcelain"])?;
-    let prefix = norm(&project_dir.join("worktrees")).to_lowercase();
-    Ok(parse_worktree_list(&out).into_iter().filter(|(p, _)| p.to_lowercase().starts_with(&prefix)).collect())
+    let root = norm(Path::new(root)).to_lowercase();
+    Ok(parse_worktree_list(&out).into_iter().filter(|(p, _)| p.to_lowercase() != root).collect())
+}
+
+/// The main checkout a worktree (or the main checkout itself) belongs to: the parent of the shared `.git`.
+pub fn main_checkout(path: &str) -> Option<String> {
+    let common = git(Path::new(path), &["rev-parse", "--path-format=absolute", "--git-common-dir"]).ok()?;
+    Path::new(common.trim()).parent().map(norm)
+}
+
+/// Made by Maestro (under its project dir) rather than found in the repo.
+pub fn is_managed(path: &str, project_dir: &Path) -> bool {
+    path.replace('\\', "/").to_lowercase().starts_with(&norm(&project_dir.join("worktrees")).to_lowercase())
+}
+
+/// Stable short id for a path (meta file names for worktrees Maestro didn't create).
+pub fn path_id(path: &str) -> String {
+    format!("{:08x}", fnv1a(&path.replace('\\', "/").to_lowercase()) as u32)
 }
 
 fn parse_worktree_list(out: &str) -> Vec<(String, String)> {
-    out.split("\n\n")
+    out.replace("\r\n", "\n")
+        .split("\n\n")
         .filter_map(|block| {
             let mut path = None;
-            let mut branch = String::from("(detached)");
+            let mut branch = None;
+            let mut head = "";
             for line in block.lines() {
                 if let Some(p) = line.strip_prefix("worktree ") {
                     path = Some(p.replace('\\', "/"));
                 } else if let Some(b) = line.strip_prefix("branch refs/heads/") {
-                    branch = b.to_string();
+                    branch = Some(b.to_string());
+                } else if let Some(h) = line.strip_prefix("HEAD ") {
+                    head = h;
+                } else if line.starts_with("prunable") {
+                    return None; // its folder was deleted outside git
                 }
             }
+            let branch = branch.unwrap_or_else(|| format!("(detached {})", &head[..head.len().min(7)]));
             path.map(|p| (p, branch))
         })
         .collect()
@@ -138,14 +164,21 @@ mod tests {
 
     #[test]
     fn parses_porcelain_worktree_list() {
-        let out = "worktree C:/dev/app\nHEAD abc\nbranch refs/heads/main\n\nworktree C:/h/.maestro/wt/a\nHEAD def\nbranch refs/heads/feat/x\n\nworktree C:/h/d\nHEAD 123\ndetached";
+        let out = "worktree C:/dev/app\nHEAD abc\nbranch refs/heads/main\n\nworktree C:/h/.maestro/wt/a\nHEAD def\nbranch refs/heads/feat/x\n\nworktree C:/h/d\nHEAD 1352154abc\ndetached\n\nworktree C:/gone\nHEAD 999\nbranch refs/heads/old\nprunable gitdir file points to non-existent location\n";
         assert_eq!(
             parse_worktree_list(out),
             vec![
                 ("C:/dev/app".into(), "main".into()),
                 ("C:/h/.maestro/wt/a".into(), "feat/x".into()),
-                ("C:/h/d".into(), "(detached)".into()),
+                ("C:/h/d".into(), "(detached 1352154)".into()),
             ]
         );
+        assert!(is_managed("C:\\h\\.maestro\\projects\\p_1\\worktrees\\agent-1", Path::new("C:/h/.maestro/projects/p_1")));
+        assert!(!is_managed("C:/Users/u/Desktop/claude-1-1", Path::new("C:/h/.maestro/projects/p_1")));
+        assert_eq!(path_id("C:\\A\\b"), path_id("c:/a/B"));
+        // this crate's own checkout resolves to itself
+        let here = env!("CARGO_MANIFEST_DIR");
+        let main = main_checkout(here).unwrap();
+        assert!(norm(Path::new(here)).to_lowercase().starts_with(&main.to_lowercase()));
     }
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ipc } from "./ipc";
 import { useStore } from "./store";
+import { MD_MIME } from "./LibraryPanel";
 
 export const DRAG_MIME = "application/x-maestro-path";
 
@@ -56,6 +57,8 @@ function TreeItem({ base, rel, name, isDir, depth }: { base: string; rel: string
         title={`${rel} — 프롬프트 블록으로 끌어서 첨부`}
         onDragStart={(e) => {
           e.dataTransfer.setData(DRAG_MIME, rel);
+          // a Markdown file can also become a canvas block (title is read on drop)
+          if (/\.md$/i.test(rel)) e.dataTransfer.setData(MD_MIME, JSON.stringify({ path: `${base.replace(/\\/g, "/")}/${rel}`, title: "" }));
           e.dataTransfer.effectAllowed = "copy";
         }}
         onClick={() => isDir && setOpen(!open)}

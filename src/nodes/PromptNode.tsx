@@ -23,7 +23,7 @@ export function PromptNode({ id, data }: NodeProps<PromptFlowNode>) {
 
   const send = async () => {
     if (!text.trim()) return;
-    if (!targets.length) return setErr("CLI 블록에 선을 연결하세요");
+    if (!targets.length) return setErr("에이전트 블록에 선을 연결하세요");
     try {
       // stopped agents are resumed by the backend on send
       await Promise.all(targets.map((w) => ipc.send(w.root, w.path, text, attached)));

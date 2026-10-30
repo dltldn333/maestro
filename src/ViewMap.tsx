@@ -48,7 +48,7 @@ export function ViewMap({ nodes }: { nodes: CanvasNode[] }) {
         {nodes.map((n) => (
           <rect
             key={n.id}
-            className={n.type === "pty_terminal_node" ? "vm-term" : "vm-prompt"}
+            className={n.type === "prompt_input_primitive" ? "vm-prompt" : "vm-term"}
             x={n.position.x}
             y={n.position.y}
             width={n.width ?? n.measured?.width ?? 0}
