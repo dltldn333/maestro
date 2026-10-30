@@ -290,6 +290,11 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--m
 .canvas-tools .crumb { padding: 0 6px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 .edge-cut { position: absolute; pointer-events: all; width: 22px; height: 22px; padding: 0; border-radius: 50%; display: grid; place-items: center; font-size: 14px; line-height: 1; background: var(--mae-panel); border: 1px solid var(--mae-border); color: var(--mae-text); box-shadow: var(--mae-shadow); cursor: pointer; }
 .edge-cut:hover { background: var(--mae-err); border-color: transparent; color: #fff; }
+.branch-mode { justify-self: start; }
+.branch-mode button { padding: 4px 12px; }
+.wt-card-branches { display: flex; align-items: center; gap: 6px; }
+.wt-card-branches label { display: inline-flex; align-items: center; gap: 4px; }
+.base-select { padding: 1px 4px; font-size: 12px; max-width: 140px; }
 /* canvas usage guide: shown briefly, then behind "?" */
 .guide { position: relative; display: inline-flex; }
 .guide-bubble { position: absolute; top: calc(100% + 10px); left: 0; width: max-content; max-width: 420px; white-space: normal; line-height: 1.5; padding: 8px 12px; border-radius: 10px; background: var(--mae-panel-2); border: 1px solid var(--mae-border); box-shadow: var(--mae-shadow); color: var(--mae-text); cursor: pointer; animation: pop-in var(--mae-dur) var(--mae-ease); z-index: 10; }

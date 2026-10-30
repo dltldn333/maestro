@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Approval, ApprovalChoice, ChatEvent, CliStatus, Repo, WorktreeInfo } from "./types";
+import type { Approval, ApprovalChoice, Branch, ChatEvent, CliStatus, Repo, WorktreeInfo } from "./types";
 
 export const b64ToBytes = (b64: string) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
 
@@ -8,14 +8,17 @@ export const ipc = {
   addRepo: (path: string) => invoke<Repo>("add_repo", { path }),
   removeRepo: (root: string) => invoke<void>("remove_repo", { root }),
   listWorktrees: (projectRoot: string) => invoke<WorktreeInfo[]>("list_worktrees", { projectRoot }),
-  createAgent: (req: { projectRoot: string; adapterId: string; permissionMode: string; branchName: string; baseBranch: string; name: string; description: string; model: string }) =>
+  /** existingBranch: check out branchName as it is instead of making it new from baseBranch */
+  createAgent: (req: { projectRoot: string; adapterId: string; permissionMode: string; branchName: string; baseBranch: string; existingBranch: boolean; name: string; description: string; model: string }) =>
     invoke<WorktreeInfo>("create_agent", { req }),
+  listBranches: (projectRoot: string) => invoke<Branch[]>("list_branches", { projectRoot }),
+  setBaseBranch: (projectRoot: string, branch: string) => invoke<void>("set_base_branch", { projectRoot, branch }),
   libraryList: (projectRoot: string) =>
     invoke<Array<{ folder: string; persona: boolean; files: Array<{ path: string; title: string }> }>>("library_list", { projectRoot }),
   personaCreate: (name: string) => invoke<string>("persona_create", { name }),
   librarySet: (projectRoot: string, folders: string[]) => invoke<void>("library_set", { projectRoot, folders }),
   mdTitle: (path: string) => invoke<string>("md_title", { path }),
-  createMaestro: (req: { projectRoot: string; adapterId: string; permissionMode: string; model: string }) => invoke<WorktreeInfo>("create_maestro", { req }),
+  createMaestro: (req: { projectRoot: string; adapterId: string; permissionMode: string; model: string; baseBranch: string }) => invoke<WorktreeInfo>("create_maestro", { req }),
   attachAgent: (req: { projectRoot: string; worktreePath: string; adapterId: string; permissionMode: string; model: string }) => invoke<void>("attach_agent", { req }),
   linkWorktrees: (projectRoot: string, parent: string, child: string) => invoke<void>("link_worktrees", { projectRoot, parent, child }),
   unlinkWorktrees: (projectRoot: string, parent: string, child: string) => invoke<void>("unlink_worktrees", { projectRoot, parent, child }),

@@ -16,6 +16,7 @@ export type Worktree = {
   refs: string[];
   external: boolean;
   personas: string[];
+  baseBranch: string | null;
   status: AgentStatus;
   unread: boolean; // finished a turn while not selected (Orca-style attention dot)
 };
@@ -55,6 +56,7 @@ const fromInfo = (root: string, w: WorktreeInfo, prev?: Worktree): Worktree => (
   refs: w.refs,
   external: w.external,
   personas: w.personas,
+  baseBranch: w.baseBranch,
   status: w.state.kind,
   unread: prev?.unread ?? false,
 });

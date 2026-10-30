@@ -3,7 +3,7 @@
 //! every command is scoped to that worktree's project. Deliberately no delete/discard: agents can add
 //! worktrees and talk to each other, not tear anything down.
 
-use crate::{agent, create_worktree, ensure, files, home, library, link, read_repos, worktree, worktree_infos, AppState, CreateAgentReq, WorktreeInfo};
+use crate::{agent, base_branch, create_worktree, ensure, files, home, library, link, read_repos, worktree, worktree_infos, AppState, CreateAgentReq, WorktreeInfo};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -11,7 +11,8 @@ use tauri::{AppHandle, Emitter, Manager};
 pub const ROUTES: &[(&str, &str)] = &[
     ("whoami", "내 워크트리, 상위 블록, 내 워커들, 나에게 연결된 참조 문서"),
     ("worktree list", "이 프로젝트의 워크트리와 에이전트 상태"),
-    ("worktree create", "--name 이름 [--prompt 첫 지시] [--agent claude-code|antigravity] [--model 모델] [--description 설명]"),
+    ("worktree create", "--name 이름 [--prompt 첫 지시] [--agent claude-code|antigravity] [--model 모델] [--description 설명] [--branch 새 브랜치 --base 기준 | --checkout 기존 브랜치]"),
+    ("branch list", "브랜치 목록 (사용 중 여부)과 마에스트로 기준 브랜치"),
     ("send", "--to 워크트리 --text 내용  (다른 에이전트에게 지시 보내기)"),
     ("read", "[--to 워크트리]  (그 에이전트의 상태와 마지막 답변, 기본은 나)"),
 ];
@@ -56,12 +57,15 @@ pub fn handle(app: &AppHandle, route: &str, caller: &str, input: &Value) -> Resu
                 return Err("--name 이 필요해요".into());
             }
             let n = worktree_infos(app, &state, &root)?.len() + 1;
+            let or = |v: String, d: String| if v.is_empty() { d } else { v };
+            let checkout = arg("checkout");
             let info = create_worktree(app, &state, CreateAgentReq {
                 project_root: root.clone(),
                 adapter_id: Some(arg("agent")).filter(|s| !s.is_empty()).or(me.adapter_id.clone()).unwrap_or("claude-code".into()),
                 permission_mode: files(app, &root, &me.path)?.read_meta().map(|m| m.permission_mode).unwrap_or("acceptEdits".into()),
-                branch_name: format!("agent-{n}"),
-                base_branch: worktree::default_branch(&root),
+                existing_branch: !checkout.is_empty(),
+                branch_name: or(checkout, or(arg("branch"), format!("agent-{n}"))),
+                base_branch: or(arg("base"), base_branch(app, &root)),
                 name,
                 description: arg("description"),
                 model: arg("model"),
@@ -75,6 +79,7 @@ pub fn handle(app: &AppHandle, route: &str, caller: &str, input: &Value) -> Resu
             }
             Ok(card(&info))
         }
+        "branch/list" => Ok(json!({ "base": base_branch(app, &root), "branches": worktree::branches(&root)? })),
         "send" => {
             let text = arg("text");
             if text.is_empty() {

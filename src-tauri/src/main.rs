@@ -148,6 +148,8 @@ pub(crate) struct WorktreeInfo {
     pub(crate) external: bool,
     /// titles of the personas linked to it
     pub(crate) personas: Vec<String>,
+    /// Maestro only: where workers branch off and merge back
+    base_branch: Option<String>,
 }
 
 fn info(state: &AppState, f: &Files, path: String, branch: String) -> WorktreeInfo {
@@ -164,6 +166,7 @@ fn info(state: &AppState, f: &Files, path: String, branch: String) -> WorktreeIn
         refs: meta.refs,
         external: false,
         personas: vec![],
+        base_branch: meta.base_branch,
         path,
         branch,
     }
@@ -175,7 +178,7 @@ pub(crate) fn worktree_infos(app: &AppHandle, state: &AppState, project_root: &s
     let mut out = vec![];
     let mf = files(app, project_root, project_root)?;
     if mf.read_meta().is_some() {
-        out.push(info(state, &mf, project_root.replace('\\', "/"), worktree::default_branch(project_root)));
+        out.push(info(state, &mf, project_root.replace('\\', "/"), worktree::current_branch(project_root)));
     }
     for (path, branch) in worktree::list(project_root)? {
         let mut w = info(state, &files(app, project_root, &path)?, path, branch);
@@ -196,6 +199,9 @@ struct CreateMaestroReq {
     adapter_id: String,
     permission_mode: String,
     model: String,
+    /// where its workers branch off ("" = the repo's default branch)
+    #[serde(default)]
+    base_branch: String,
 }
 
 /// The project's Maestro: a coordinator agent on the project folder itself (main branch), started right away.
@@ -211,6 +217,7 @@ async fn create_maestro(app: AppHandle, state: State<'_, AppState>, req: CreateM
         model: Some(req.model).filter(|m| !m.is_empty()),
         name: Some("Maestro".into()),
         role: Some("maestro".into()),
+        base_branch: Some(req.base_branch).filter(|b| !b.is_empty()),
         ..Default::default()
     };
     f.write_meta(&meta)?;
@@ -377,6 +384,34 @@ fn set_ref_meta(app: &AppHandle, project_root: &str, worktree: &str, md: &str, o
     Ok(())
 }
 
+/// Where new worktrees branch off by default: the Maestro's base branch, else the repo's default branch.
+pub(crate) fn base_branch(app: &AppHandle, project_root: &str) -> String {
+    files(app, project_root, project_root).ok().and_then(|f| f.read_meta()).and_then(|m| m.base_branch).unwrap_or_else(|| worktree::default_branch(project_root))
+}
+
+#[tauri::command]
+async fn list_branches(project_root: String) -> Result<Vec<worktree::Branch>, String> {
+    worktree::branches(&project_root)
+}
+
+/// Changes the Maestro's base branch; a running Maestro is told right away (the brief has it from the next start).
+#[tauri::command]
+fn set_base_branch(app: AppHandle, state: State<AppState>, project_root: String, branch: String) -> Result<(), String> {
+    let f = files(&app, &project_root, &project_root)?;
+    let mut m = f.read_meta().ok_or("이 프로젝트에는 마에스트로가 없어요")?;
+    m.base_branch = Some(branch.clone()).filter(|b| !b.is_empty());
+    f.write_meta(&m)?;
+    if let Some(agent) = state.get(&project_root).filter(|a| a.alive()) {
+        let text = format!("[Maestro] 기준 브랜치가 '{branch}'(으)로 바뀌었어요. 새 워커는 여기서 갈라지고, 끝난 작업은 '{branch}'에 합쳐 주세요.");
+        std::thread::spawn(move || {
+            if !agent.wait_ready() {
+                let _ = agent.send(&text, &[]);
+            }
+        });
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn list_worktrees(app: AppHandle, state: State<'_, AppState>, project_root: String) -> Result<Vec<WorktreeInfo>, String> {
     worktree_infos(&app, &state, &project_root)
@@ -390,6 +425,9 @@ pub(crate) struct CreateAgentReq {
     pub(crate) permission_mode: String,
     pub(crate) branch_name: String,
     pub(crate) base_branch: String,
+    /// check out `branch_name` as it is (an existing branch) instead of making it new from `base_branch`
+    #[serde(default)]
+    pub(crate) existing_branch: bool,
     pub(crate) name: String,
     pub(crate) description: String,
     /// "" = the CLI's own default
@@ -406,7 +444,8 @@ async fn create_agent(app: AppHandle, state: State<'_, AppState>, req: CreateAge
 pub(crate) fn create_worktree(app: &AppHandle, state: &AppState, req: CreateAgentReq) -> Result<WorktreeInfo, String> {
     let app = app.clone();
     let pdir = worktree::project_dir(&home(&app)?, &req.project_root);
-    let (path, branch) = worktree::create(&req.project_root, &pdir, &req.branch_name, &req.base_branch)?;
+    let keep_branch = req.existing_branch;
+    let (path, branch) = worktree::create(&req.project_root, &pdir, &req.branch_name, &req.base_branch, keep_branch)?;
     let path = worktree::norm(&path);
     let f = Files::new(&pdir, &path);
     let some = |s: String| Some(s.trim().to_string()).filter(|s| !s.is_empty());
@@ -416,6 +455,7 @@ pub(crate) fn create_worktree(app: &AppHandle, state: &AppState, req: CreateAgen
         name: some(req.name),
         description: some(req.description),
         model: some(req.model),
+        keep_branch,
         ..Default::default()
     };
     let started = f.write_meta(&meta).and_then(|_| Agent::spawn(app.clone(), &home(&app)?, &path, &f, meta, &app.state::<Approvals>()));
@@ -426,7 +466,7 @@ pub(crate) fn create_worktree(app: &AppHandle, state: &AppState, req: CreateAgen
         }
         Err(e) => {
             // don't leave an orphan worktree behind a failed start
-            let _ = worktree::discard(&req.project_root, &path, &branch);
+            let _ = worktree::discard(&req.project_root, &path, &branch, keep_branch);
             let _ = std::fs::remove_file(&f.meta);
             Err(e)
         }
@@ -625,7 +665,8 @@ async fn discard_worktree(app: AppHandle, state: State<'_, AppState>, project_ro
         let _ = std::fs::remove_file(meta);
         return Ok(());
     }
-    worktree::discard(&project_root, &worktree_path, &branch)?;
+    let keep_branch = files(&app, &project_root, &worktree_path)?.read_meta().is_some_and(|m| m.keep_branch);
+    worktree::discard(&project_root, &worktree_path, &branch, keep_branch)?;
     // a discarded worktree is no longer anyone's worker
     for (_, f) in agent_files(&app, &project_root)? {
         if let Some(mut m) = f.read_meta().filter(|m| m.workers.iter().any(|w| w.eq_ignore_ascii_case(&worktree_path))) {
@@ -752,6 +793,8 @@ fn main() {
             add_repo,
             remove_repo,
             list_worktrees,
+            list_branches,
+            set_base_branch,
             create_agent,
             send_message,
             ensure_agent,

@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ipc } from "./ipc";
 import { useSettings } from "./settings";
 import { useStore } from "./store";
-import type { CliStatus, Repo } from "./types";
+import type { Branch, CliStatus, Repo } from "./types";
 import claudeLogo from "./assets/agents/claude-code.svg";
 import antigravityLogo from "./assets/agents/antigravity.png";
 import codexLogo from "./assets/agents/codex.svg";
@@ -32,6 +32,30 @@ export const PERMISSIONS = [
   { id: "plan", label: "계획만", hint: "파일을 바꾸지 않고 계획만 세워요." },
 ];
 
+/**
+ * The repo's branches (local, then remote-only). `pickable`: for checking a branch out, so branches already
+ * checked out somewhere are disabled (git refuses them). A value the list doesn't have still shows.
+ */
+export function BranchSelect({ branches, value, onChange, pickable, className }: {
+  branches: Branch[] | null;
+  value: string;
+  onChange: (name: string) => void;
+  pickable?: boolean;
+  className?: string;
+}) {
+  const list = branches ?? [];
+  return (
+    <select className={className} value={value} disabled={!branches} onChange={(e) => onChange(e.target.value)}>
+      {!list.some((b) => b.name === value) && <option value={value}>{branches ? value : "브랜치 읽는 중…"}</option>}
+      {list.map((b) => (
+        <option key={b.name} value={b.name} disabled={pickable && b.inUse}>
+          {b.name}{b.remote ? " · 원격" : ""}{b.inUse ? " · 사용 중" : ""}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 /** New agent block: pick an agent; Maestro makes its worktree and starts it. */
 export function NewAgentDialog({ repo, maestro, parentPath, onClose }: {
   repo: Repo;
@@ -52,7 +76,12 @@ export function NewAgentDialog({ repo, maestro, parentPath, onClose }: {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [branch, setBranch] = useState(`agent-${count + 1}`);
-  const [base, setBase] = useState(repo.defaultBranch);
+  // workers branch off the Maestro's base branch unless picked otherwise
+  const maestroBase = useStore((s) => s.worktrees.find((w) => w.root === repo.root && w.isMaestro)?.baseBranch);
+  const [base, setBase] = useState(maestroBase ?? repo.defaultBranch);
+  const [existing, setExisting] = useState(""); // "" = make a new branch
+  const [branches, setBranches] = useState<Branch[] | null>(null);
+  useEffect(() => void ipc.listBranches(repo.root).then(setBranches).catch(() => setBranches([])), [repo.root]);
   const [more, setMore] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -64,10 +93,20 @@ export function NewAgentDialog({ repo, maestro, parentPath, onClose }: {
     try {
       const model = agentModels[agent] ?? "";
       if (maestro) {
-        upsert(repo.root, await ipc.createMaestro({ projectRoot: repo.root, adapterId: agent, permissionMode: perm, model }));
+        upsert(repo.root, await ipc.createMaestro({ projectRoot: repo.root, adapterId: agent, permissionMode: perm, model, baseBranch: base }));
         return onClose();
       }
-      const info = await ipc.createAgent({ projectRoot: repo.root, adapterId: agent, permissionMode: perm, branchName: branch.trim(), baseBranch: base.trim() || "HEAD", name, description, model });
+      const info = await ipc.createAgent({
+        projectRoot: repo.root,
+        adapterId: agent,
+        permissionMode: perm,
+        branchName: existing || branch.trim(),
+        baseBranch: base.trim() || "HEAD",
+        existingBranch: !!existing,
+        name,
+        description,
+        model,
+      });
       upsert(repo.root, info); // the project canvas adds its card and pans to it; double-click to go in
       if (parentPath) {
         // made by dragging a line out of a card: it's that card's worker
@@ -87,14 +126,14 @@ export function NewAgentDialog({ repo, maestro, parentPath, onClose }: {
         <h3>{maestro ? `♛ 마에스트로 · ${repo.name}` : parentPath ? `새 워커 · ${repo.name}` : `새 워크트리 · ${repo.name}`}</h3>
         {maestro ? (
           <p className="muted small">
-            프로젝트 폴더({repo.defaultBranch} 브랜치)에서 돌아가는 조율 에이전트예요. 일을 나눠 워커 워크트리에 맡기고, 결과를 모아 합쳐요.
+            프로젝트 폴더(지금 체크아웃된 브랜치)에서 돌아가는 조율 에이전트예요. 일을 나눠 워커 워크트리에 맡기고, 결과를 기준 브랜치에 모아 합쳐요.
             원본 폴더에서 직접 실행되니 권한을 신중히 골라 주세요.
           </p>
         ) : (
           <>
             <label>
               이름
-              <input autoFocus value={name} placeholder={`비우면 브랜치 이름(${branch})`} onChange={(e) => setName(e.target.value)} />
+              <input autoFocus value={name} placeholder={`비우면 브랜치 이름(${existing || branch})`} onChange={(e) => setName(e.target.value)} />
             </label>
             <label>
               설명
@@ -127,27 +166,54 @@ export function NewAgentDialog({ repo, maestro, parentPath, onClose }: {
           </select>
           <span className="muted small">{PERMISSIONS.find((p) => p.id === perm)?.hint}</span>
         </label>
-        {maestro ? null : more ? (
+        {maestro ? (
+          <label>
+            워커 기준 브랜치
+            <BranchSelect branches={branches} value={base} onChange={setBase} />
+            <span className="muted small">새 워커가 여기서 갈라지고, 끝난 작업은 여기에 합쳐요. 마에스트로 카드에서 바꿀 수 있어요.</span>
+          </label>
+        ) : more ? (
           <>
-            <label>
-              브랜치
-              <input value={branch} onChange={(e) => setBranch(e.target.value)} />
-            </label>
-            <label>
-              기준 브랜치
-              <input value={base} onChange={(e) => setBase(e.target.value)} />
-            </label>
+            <div className="seg branch-mode">
+              <button type="button" data-on={!existing || undefined} onClick={() => setExisting("")}>새 브랜치</button>
+              <button
+                type="button"
+                data-on={!!existing || undefined}
+                disabled={!branches?.some((b) => !b.inUse)}
+                onClick={() => setExisting(branches?.find((b) => !b.inUse)?.name ?? "")}
+              >
+                기존 브랜치
+              </button>
+            </div>
+            {existing ? (
+              <label>
+                체크아웃할 브랜치
+                <BranchSelect branches={branches} value={existing} onChange={setExisting} pickable />
+                <span className="muted small">이 브랜치에서 이어서 작업해요. 워크트리를 폐기해도 브랜치는 남아요.</span>
+              </label>
+            ) : (
+              <>
+                <label>
+                  새 브랜치 이름
+                  <input value={branch} onChange={(e) => setBranch(e.target.value)} />
+                </label>
+                <label>
+                  기준 브랜치
+                  <BranchSelect branches={branches} value={base} onChange={setBase} />
+                </label>
+              </>
+            )}
           </>
         ) : (
           <button type="button" className="link muted small" onClick={() => setMore(true)}>
-            브랜치 {branch} · 기준 {base} — 변경
+            새 브랜치 {branch} · 기준 {base} — 변경
           </button>
         )}
         {agentMissing && <p className="err small">쓸 수 있는 에이전트가 아니에요. 설정 → 에이전트에서 설치하거나 켜 주세요.</p>}
         {err && <p className="err wrap">{err}</p>}
         <div className="modal-actions">
           <button type="button" disabled={busy} onClick={onClose}>취소</button>
-          <button type="submit" className="primary" disabled={busy || !branch.trim() || agentMissing}>{busy ? "시작하는 중…" : "만들고 실행"}</button>
+          <button type="submit" className="primary" disabled={busy || !(existing || branch.trim()) || agentMissing}>{busy ? "시작하는 중…" : "만들고 실행"}</button>
         </div>
       </form>
     </div>

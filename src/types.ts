@@ -22,7 +22,11 @@ export type WorktreeInfo = {
   external: boolean;
   /** titles of the personas linked to it */
   personas: string[];
+  /** Maestro only: where workers branch off and merge back (null = the repo's default branch) */
+  baseBranch: string | null;
 };
+
+export type Branch = { name: string; remote: boolean; inUse: boolean };
 
 export type PromptInputBlockData = {
   label: string;

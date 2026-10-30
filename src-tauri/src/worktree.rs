@@ -51,17 +51,62 @@ pub fn project_dir(home: &Path, root: &str) -> PathBuf {
     home.join(".maestro").join("projects").join(format!("{}_{:08x}", sanitize(&name), fnv1a(root)))
 }
 
-/// `git worktree add -b`, adding -2, -3 … when the branch or folder already exists.
-pub fn create(root: &str, project_dir: &Path, branch: &str, base: &str) -> Result<(PathBuf, String), String> {
+/// The branch the project folder has checked out.
+pub fn current_branch(root: &str) -> String {
+    git(Path::new(root), &["symbolic-ref", "--short", "HEAD"]).unwrap_or_else(|_| "HEAD".into())
+}
+
+/// A branch a worktree can start from or check out.
+#[derive(serde::Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Branch {
+    pub name: String,
+    /// only on a remote: checking it out makes a local tracking branch
+    pub remote: bool,
+    /// checked out in the project folder or a worktree: git won't check it out a second time
+    pub in_use: bool,
+}
+
+/// Local branches, then remote-only ones by their short name (`origin/feat` → `feat`).
+pub fn branches(root: &str) -> Result<Vec<Branch>, String> {
+    let dir = Path::new(root);
+    let local = git(dir, &["for-each-ref", "--format=%(refname:short)", "refs/heads"])?;
+    let remote = git(dir, &["for-each-ref", "--format=%(refname:short)", "refs/remotes"])?;
+    let in_use: Vec<String> = parse_worktree_list(&git(dir, &["worktree", "list", "--porcelain"])?).into_iter().map(|(_, b)| b).collect();
+    Ok(merge_branches(&local, &remote, &in_use))
+}
+
+fn merge_branches(local: &str, remote: &str, in_use: &[String]) -> Vec<Branch> {
+    let mut out: Vec<Branch> = local.lines().filter(|l| !l.is_empty()).map(|n| Branch { name: n.into(), remote: false, in_use: false }).collect();
+    for r in remote.lines() {
+        // `origin/HEAD` (shown as `origin` by newer git) is a pointer, not a branch
+        let Some((_, name)) = r.split_once('/') else { continue };
+        if name != "HEAD" && !out.iter().any(|b| b.name == name) {
+            out.push(Branch { name: name.into(), remote: true, in_use: false });
+        }
+    }
+    for b in &mut out {
+        b.in_use = in_use.contains(&b.name);
+    }
+    out
+}
+
+/// A worktree in Maestro's project dir. `existing`: check out that branch (a remote-only one becomes a
+/// local tracking branch, git's default). Otherwise a new `branch` from `base`, adding -2, -3 … when taken.
+pub fn create(root: &str, project_dir: &Path, branch: &str, base: &str, existing: bool) -> Result<(PathBuf, String), String> {
     let root = Path::new(root);
     for n in 1..100 {
         let cand = if n == 1 { branch.to_string() } else { format!("{branch}-{n}") };
         let path = project_dir.join("worktrees").join(sanitize(&cand));
-        let taken = git(root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{cand}")]).is_ok();
+        let taken = !existing && git(root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{cand}")]).is_ok();
         if taken || path.exists() {
             continue;
         }
         std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+        if existing {
+            git(root, &["worktree", "add", &path.to_string_lossy(), branch])?;
+            return Ok((path, branch.to_string()));
+        }
         git(root, &["worktree", "add", "-b", &cand, &path.to_string_lossy(), base])?;
         return Ok((path, cand));
     }
@@ -118,10 +163,14 @@ fn parse_worktree_list(out: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Removes the worktree folder and deletes its branch (the agent's commits are lost).
-pub fn discard(root: &str, path: &str, branch: &str) -> Result<(), String> {
+/// Removes the worktree folder and, unless `keep_branch` (it checked out a branch that existed before),
+/// deletes its branch (the agent's commits are lost).
+pub fn discard(root: &str, path: &str, branch: &str, keep_branch: bool) -> Result<(), String> {
     let root = Path::new(root);
     git(root, &["worktree", "remove", "--force", path])?;
+    if keep_branch {
+        return Ok(());
+    }
     git(root, &["branch", "-D", branch]).map(|_| ())
 }
 
@@ -160,6 +209,13 @@ mod tests {
         assert_eq!(a, project_dir(Path::new("/h"), "C:/dev/my app"));
         assert!(a.to_string_lossy().contains("my_app_"));
         assert_ne!(a, project_dir(Path::new("/h"), "D:/dev/my app"));
+    }
+
+    #[test]
+    fn merges_local_and_remote_branches() {
+        let b = merge_branches("main\ndev\n", "origin\norigin/HEAD\norigin/dev\norigin/feat/x\nupstream/fix", &["main".into()]);
+        let names: Vec<(&str, bool, bool)> = b.iter().map(|b| (b.name.as_str(), b.remote, b.in_use)).collect();
+        assert_eq!(names, [("main", false, true), ("dev", false, false), ("feat/x", true, false), ("fix", true, false)]);
     }
 
     #[test]

@@ -53,6 +53,12 @@ pub struct AgentMeta {
     /// Markdown files this agent should refer to (reference lines from Markdown blocks)
     #[serde(default)]
     pub refs: Vec<String>,
+    /// the worktree checked out a branch that existed before: discarding it keeps the branch
+    #[serde(default)]
+    pub keep_branch: bool,
+    /// Maestro only: the branch workers start from and get merged back into (None = the repo's default)
+    #[serde(default)]
+    pub base_branch: Option<String>,
     /// cached one-line summary of the latest turn, and which conversation text it was made from
     pub summary: Option<String>,
     pub summary_key: Option<String>,
@@ -446,6 +452,9 @@ pub fn system_brief(home: &Path, meta: &AgentMeta) -> String {
     let mut out = String::from(MAESTRO_HINT);
     if meta.role.as_deref() == Some("maestro") {
         out = format!("{out}\n\n{COORDINATOR_HINT}");
+        if let Some(base) = &meta.base_branch {
+            out = format!("{out}\n\nBase branch: `{base}`. New workers branch off it (`maestro worktree create` does this by default); merge finished work into `{base}`, not anywhere else.");
+        }
     }
     let (personas, docs): (Vec<&String>, Vec<&String>) = meta.refs.iter().partition(|r| crate::library::is_persona(home, r));
     for p in personas {
