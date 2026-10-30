@@ -442,7 +442,7 @@ const COORDINATOR_HINT: &str = "You are this project's Maestro: the coordinator.
 Your workers are the worktrees linked to you (`maestro whoami` lists them; `maestro worktree list` marks them). Prefer delegating implementation: \
 split the request into self-contained tasks (target, change, constraints, what the worker may edit, how to check it's done), \
 give each to a worker (`maestro worktree create --name … --prompt …` makes a new linked worker, `maestro send --to …` instructs an existing one), \
-follow up with `maestro read --to …`, then review and merge their branches here. Don't edit code yourself unless the user asks.";
+follow up with `maestro read --to …` (when a worker finishes a turn, Maestro also pastes a `[maestro] 워커 … 완료` note with its answer into your prompt), then review and merge their branches here. Don't edit code yourself unless the user asks.";
 
 /// Claude Code's command line (Antigravity's is in antigravity.rs).
 /// Everything Maestro tells a Claude agent up front: the `maestro` CLI, the coordinator role, its persona
@@ -559,7 +559,13 @@ impl Agent {
                 let base = tail.count;
                 for (i, ev) in tail.read_new().into_iter().enumerate() {
                     if let Some(next) = state_after(&ev) {
+                        // a finished turn (not an Esc or a slash command) is reported to whoever leads this agent
+                        let done = next == AgentState::Idle && ev["type"] == "assistant" && *st.lock().unwrap() == AgentState::Running;
                         emit_state(&a, &p, &st, next);
+                        if done {
+                            let (a, p) = (a.clone(), p.clone());
+                            thread::spawn(move || crate::control::worker_done(&a, &p)); // delivering blocks until the parent's prompt is up
+                        }
                     }
                     let _ = a.emit("agent://event", AgentEvent { worktree_path: p.clone(), seq: base + i as u64 + 1, event: ev });
                 }

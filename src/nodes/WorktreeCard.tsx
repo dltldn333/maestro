@@ -5,8 +5,7 @@ import { StatusDot } from "../Sidebar";
 import { useApprovals, useStore, useWorktree } from "../store";
 import type { WorktreeCardNode } from "../types";
 import { fold, lastText, useAgentBoot, useTranscript } from "./AgentNode";
-import { AgentLogo, BranchSelect, agentLabel } from "../NewAgentDialog";
-import type { Branch } from "../types";
+import { AgentLogo, agentLabel } from "../NewAgentDialog";
 import { useSettings } from "../settings";
 import { AttachAgent } from "./AttachAgent";
 
@@ -69,7 +68,6 @@ export function WorktreeCard({ data }: NodeProps<WorktreeCardNode>) {
         <span className="agent-tag muted small"><AgentLogo id={wt.adapterId} size={14} />{agentLabel(wt.adapterId)}</span>
       </header>
       <div className="wt-card-body">
-        {wt.isMaestro && <MaestroBase root={wt.root} folderBranch={wt.branch} base={wt.baseBranch} />}
         {wt.description && <div className="wt-card-desc muted small">{wt.description}</div>}
         {!!wt.personas.length && (
           <div className="wt-card-personas">
@@ -106,25 +104,6 @@ export function WorktreeCard({ data }: NodeProps<WorktreeCardNode>) {
         </div>
       </div>
       {wt.adapterId && <QuickPrompt root={wt.root} path={wt.path} ready={ready} />}
-    </div>
-  );
-}
-
-/** The Maestro's branches: the one its folder has checked out, and the base its workers branch off. */
-function MaestroBase({ root, folderBranch, base }: { root: string; folderBranch: string; base: string | null }) {
-  const [branches, setBranches] = useState<Branch[] | null>(null);
-  const repoDefault = useStore((s) => s.repos.find((r) => r.root === root)?.defaultBranch ?? "");
-  const setError = useStore((s) => s.setError);
-  useEffect(() => void ipc.listBranches(root).then(setBranches).catch(() => setBranches([])), [root]);
-  const change = (b: string) =>
-    ipc.setBaseBranch(root, b).then(() => useStore.getState().refreshWorktrees(root)).catch(setError);
-  return (
-    <div className="wt-card-branches small nodrag">
-      <span className="muted" title="프로젝트 폴더에 체크아웃된 브랜치">폴더 {folderBranch}</span>
-      <span className="muted">·</span>
-      <label className="muted" title="새 워커가 갈라지고, 끝난 작업을 합치는 브랜치">
-        기준 <BranchSelect className="base-select" branches={branches} value={base ?? repoDefault} onChange={change} />
-      </label>
     </div>
   );
 }

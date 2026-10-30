@@ -92,7 +92,8 @@ impl Approvals {
     pub fn write_settings(&self, file: &Path, session_id: &str) -> Result<(), String> {
         let url = format!("http://127.0.0.1:{}/permission/{session_id}?t={}", self.port, self.token);
         let command = format!("curl -s --max-time {HOOK_TIMEOUT_SECS} -X POST -H \"Content-Type: application/json\" --data-binary @- \"{url}\"");
-        let settings = json!({ "hooks": { "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": command, "timeout": HOOK_TIMEOUT_SECS }] }] } });
+        // the maestro CLI can't delete anything (control.rs), and asking each time would stall orchestration
+        let settings = json!({ "permissions": { "allow": ["Bash(maestro:*)"] }, "hooks": { "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": command, "timeout": HOOK_TIMEOUT_SECS }] }] } });
         std::fs::create_dir_all(file.parent().unwrap()).map_err(|e| e.to_string())?;
         std::fs::write(file, serde_json::to_string_pretty(&settings).unwrap()).map_err(|e| e.to_string())
     }

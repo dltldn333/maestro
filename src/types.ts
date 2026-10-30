@@ -24,6 +24,8 @@ export type WorktreeInfo = {
   personas: string[];
   /** Maestro only: where workers branch off and merge back (null = the repo's default branch) */
   baseBranch: string | null;
+  /** titles of the other (non-persona) documents it refers to */
+  docs: string[];
 };
 
 export type Branch = { name: string; remote: boolean; inUse: boolean };
@@ -65,6 +67,8 @@ export interface CanvasStateSchema {
   activeSkillId: string;
   activeThemeId: string;
   viewport: { x: number; y: number; zoom: number };
+  /** 1 = laid out as a tree at least once; a canvas saved before that gets arranged once on load */
+  tree?: number;
   nodes: Array<Pick<CanvasNode, "id" | "type" | "position" | "width" | "height" | "data">>;
   edges: Array<Pick<CanvasEdge, "id" | "source" | "target" | "data">>;
 }

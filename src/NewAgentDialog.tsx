@@ -170,7 +170,7 @@ export function NewAgentDialog({ repo, maestro, parentPath, onClose }: {
           <label>
             워커 기준 브랜치
             <BranchSelect branches={branches} value={base} onChange={setBase} />
-            <span className="muted small">새 워커가 여기서 갈라지고, 끝난 작업은 여기에 합쳐요. 마에스트로 카드에서 바꿀 수 있어요.</span>
+            <span className="muted small">새 워커가 여기서 갈라지고, 끝난 작업은 여기에 합쳐요. 워커마다 만들 때 다른 기준을 고를 수도 있어요.</span>
           </label>
         ) : more ? (
           <>

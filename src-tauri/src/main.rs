@@ -150,6 +150,8 @@ pub(crate) struct WorktreeInfo {
     pub(crate) personas: Vec<String>,
     /// Maestro only: where workers branch off and merge back
     base_branch: Option<String>,
+    /// titles of the other (non-persona) documents it refers to
+    docs: Vec<String>,
 }
 
 fn info(state: &AppState, f: &Files, path: String, branch: String) -> WorktreeInfo {
@@ -167,6 +169,7 @@ fn info(state: &AppState, f: &Files, path: String, branch: String) -> WorktreeIn
         external: false,
         personas: vec![],
         base_branch: meta.base_branch,
+        docs: vec![],
         path,
         branch,
     }
@@ -187,7 +190,9 @@ pub(crate) fn worktree_infos(app: &AppHandle, state: &AppState, project_root: &s
     }
     let home = home(app)?;
     for w in &mut out {
-        w.personas = w.refs.iter().filter(|r| library::is_persona(&home, r)).map(|r| library::title_of(Path::new(r))).collect();
+        let (personas, docs): (Vec<&String>, Vec<&String>) = w.refs.iter().partition(|r| library::is_persona(&home, r));
+        let titles = |v: Vec<&String>| v.into_iter().map(|r| library::title_of(Path::new(r))).collect();
+        (w.personas, w.docs) = (titles(personas), titles(docs));
     }
     Ok(out)
 }
@@ -346,7 +351,13 @@ fn unlink_worktrees(app: AppHandle, project_root: String, parent: String, child:
 /// (its last block was deleted from the canvas).
 #[tauri::command]
 fn set_ref(app: AppHandle, state: State<AppState>, project_root: String, worktree: String, md: String, on: bool) -> Result<(), String> {
-    set_ref_meta(&app, &project_root, &worktree, &md, on)?;
+    set_reference(&app, &state, &project_root, &worktree, &md, on)
+}
+
+/// Shared by the canvases and `maestro ref add/remove`.
+pub(crate) fn set_reference(app: &AppHandle, state: &AppState, project_root: &str, worktree: &str, md: &str, on: bool) -> Result<(), String> {
+    let (app, worktree, md) = (app.clone(), worktree.to_string(), md.to_string());
+    set_ref_meta(&app, project_root, &worktree, &md, on)?;
     // a persona takes effect at the agent's next start (system brief); a running agent hears it now
     let home = home(&app)?;
     if !worktree.is_empty() && library::is_persona(&home, &md) {
@@ -392,24 +403,6 @@ pub(crate) fn base_branch(app: &AppHandle, project_root: &str) -> String {
 #[tauri::command]
 async fn list_branches(project_root: String) -> Result<Vec<worktree::Branch>, String> {
     worktree::branches(&project_root)
-}
-
-/// Changes the Maestro's base branch; a running Maestro is told right away (the brief has it from the next start).
-#[tauri::command]
-fn set_base_branch(app: AppHandle, state: State<AppState>, project_root: String, branch: String) -> Result<(), String> {
-    let f = files(&app, &project_root, &project_root)?;
-    let mut m = f.read_meta().ok_or("이 프로젝트에는 마에스트로가 없어요")?;
-    m.base_branch = Some(branch.clone()).filter(|b| !b.is_empty());
-    f.write_meta(&m)?;
-    if let Some(agent) = state.get(&project_root).filter(|a| a.alive()) {
-        let text = format!("[Maestro] 기준 브랜치가 '{branch}'(으)로 바뀌었어요. 새 워커는 여기서 갈라지고, 끝난 작업은 '{branch}'에 합쳐 주세요.");
-        std::thread::spawn(move || {
-            if !agent.wait_ready() {
-                let _ = agent.send(&text, &[]);
-            }
-        });
-    }
-    Ok(())
 }
 
 #[tauri::command]
@@ -731,9 +724,14 @@ fn read_library(app: &AppHandle, project_root: &str) -> Result<Vec<String>, Stri
 
 #[tauri::command]
 async fn library_list(app: AppHandle, project_root: String) -> Result<Vec<library::LibFolder>, String> {
-    let personas = library::personas_dir(&home(&app)?);
+    library_folders(&app, &project_root)
+}
+
+/// The persona folder first, then the project's registered Markdown folders (also `maestro library list`).
+pub(crate) fn library_folders(app: &AppHandle, project_root: &str) -> Result<Vec<library::LibFolder>, String> {
+    let personas = library::personas_dir(&home(app)?);
     let mut out = vec![library::LibFolder { files: library::scan(&personas), folder: personas.to_string_lossy().replace('\\', "/"), persona: true }];
-    out.extend(read_library(&app, &project_root)?.into_iter().map(|folder| library::LibFolder { files: library::scan(Path::new(&folder)), folder, persona: false }));
+    out.extend(read_library(app, project_root)?.into_iter().map(|folder| library::LibFolder { files: library::scan(Path::new(&folder)), folder, persona: false }));
     Ok(out)
 }
 
@@ -794,7 +792,6 @@ fn main() {
             remove_repo,
             list_worktrees,
             list_branches,
-            set_base_branch,
             create_agent,
             send_message,
             ensure_agent,

@@ -39,7 +39,7 @@ function treeRows(wts: Worktree[]) {
 }
 
 export function Sidebar({ onNewWorktree, onOpenSettings }: { onNewWorktree: (repo: Repo) => void; onOpenSettings: () => void }) {
-  const { repos, activeRoot, worktrees, selectedPath, addRepo, removeRepo, setActive, select, setError, approvals } = useStore();
+  const { ready, repos, activeRoot, worktrees, selectedPath, addRepo, removeRepo, setActive, select, setError, approvals } = useStore();
   const waitingPaths = new Set(approvals.map((a) => a.worktreePath.toLowerCase()));
 
   const pickRepo = async () => {
@@ -122,7 +122,7 @@ export function Sidebar({ onNewWorktree, onOpenSettings }: { onNewWorktree: (rep
             </section>
           );
         })}
-        {!repos.length && (
+        {ready && !repos.length && (
           <div className="sb-empty">
             <p className="muted">로컬 Git 저장소를 추가하면 에이전트 블록마다 격리된 워크트리에서 에이전트를 실행할 수 있어요.</p>
             <button onClick={pickRepo}>저장소 추가</button>

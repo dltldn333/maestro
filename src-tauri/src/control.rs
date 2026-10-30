@@ -3,8 +3,9 @@
 //! every command is scoped to that worktree's project. Deliberately no delete/discard: agents can add
 //! worktrees and talk to each other, not tear anything down.
 
-use crate::{agent, base_branch, create_worktree, ensure, files, home, library, link, read_repos, worktree, worktree_infos, AppState, CreateAgentReq, WorktreeInfo};
+use crate::{agent, base_branch, create_worktree, ensure, files, home, library, library_folders, link, read_repos, set_reference, worktree, worktree_infos, AppState, CreateAgentReq, WorktreeInfo};
 use serde_json::{json, Value};
+use std::path::Path;
 use tauri::{AppHandle, Emitter, Manager};
 
 /// What `maestro --help` lists; `maestro <route words> --flag value` maps onto these.
@@ -13,6 +14,10 @@ pub const ROUTES: &[(&str, &str)] = &[
     ("worktree list", "이 프로젝트의 워크트리와 에이전트 상태"),
     ("worktree create", "--name 이름 [--prompt 첫 지시] [--agent claude-code|antigravity] [--model 모델] [--description 설명] [--branch 새 브랜치 --base 기준 | --checkout 기존 브랜치]"),
     ("branch list", "브랜치 목록 (사용 중 여부)과 마에스트로 기준 브랜치"),
+    ("library list", "이 프로젝트 보관함의 마크다운 (페르소나 포함): 참조로 걸 수 있는 문서"),
+    ("ref list", "[--to 워크트리]  (그 에이전트가 참조하는 문서, 기본은 나)"),
+    ("ref add", "--path 파일.md [--to 워크트리]  (참조 연결: 그 에이전트 캔버스에 마크다운 블록이 생겨요)"),
+    ("ref remove", "--path 파일.md [--to 워크트리]  (참조 해제)"),
     ("send", "--to 워크트리 --text 내용  (다른 에이전트에게 지시 보내기)"),
     ("read", "[--to 워크트리]  (그 에이전트의 상태와 마지막 답변, 기본은 나)"),
 ];
@@ -80,6 +85,23 @@ pub fn handle(app: &AppHandle, route: &str, caller: &str, input: &Value) -> Resu
             Ok(card(&info))
         }
         "branch/list" => Ok(json!({ "base": base_branch(app, &root), "branches": worktree::branches(&root)? })),
+        "library/list" => Ok(json!(library_folders(app, &root)?)),
+        "ref/list" => {
+            let to = match arg("to").as_str() {
+                "" => me,
+                key => target(app, &state, &root, key)?,
+            };
+            Ok(json!({ "worktree": card(&to), "references": refs_of(app, &to) }))
+        }
+        "ref/add" | "ref/remove" => {
+            let to = target(app, &state, &root, &Some(arg("to")).filter(|t| !t.is_empty()).unwrap_or(me.path.clone()))?;
+            let on = route == "ref/add";
+            let path = md_path(&me.path, &arg("path"), on)?;
+            set_reference(app, &state, &root, &to.path, &path, on)?;
+            let _ = app.emit("maestro://worktrees", &root); // canvases add or drop the Markdown block
+            let to = target(app, &state, &root, &to.path)?;
+            Ok(json!({ "worktree": card(&to), "references": refs_of(app, &to) }))
+        }
         "send" => {
             let text = arg("text");
             if text.is_empty() {
@@ -98,6 +120,55 @@ pub fn handle(app: &AppHandle, route: &str, caller: &str, input: &Value) -> Resu
         }
         _ => Err(format!("모르는 명령: {}. `maestro --help`를 보세요.", route.replace('/', " "))),
     }
+}
+
+/// A worker's turn ended: paste a note with its answer into its parent's prompt, so the parent can carry on
+/// without polling. Only a running parent is told (a closed one isn't restarted for this); errors are dropped.
+pub fn worker_done(app: &AppHandle, path: &str) {
+    let state = app.state::<AppState>();
+    let Ok((root, me)) = locate(app, &state, path) else { return };
+    let Ok(all) = worktree_infos(app, &state, &root) else { return };
+    let Some(parent) = parent_of(&all, &me.path) else { return };
+    let Some(agent) = state.get(&parent.path).filter(|a| a.alive()) else { return };
+    if agent.wait_ready() {
+        return; // still at the trust dialog
+    }
+    let _ = agent.send(&done_note(me.name.as_deref().unwrap_or(&me.branch), last_answer(app, &root, &me.path)), &[]);
+}
+
+fn done_note(name: &str, answer: Option<String>) -> String {
+    const MAX: usize = 1500;
+    let answer = answer.unwrap_or_default();
+    let cut = answer.char_indices().nth(MAX).map_or(answer.as_str(), |(i, _)| &answer[..i]);
+    let more = if cut.len() < answer.len() { format!("\n… (잘림, 전체는 `maestro read --to {name}`)") } else { String::new() };
+    format!("[maestro] 워커 '{name}' 완료. 마지막 답변:\n{cut}{more}")
+}
+
+fn refs_of(app: &AppHandle, w: &WorktreeInfo) -> Vec<Value> {
+    let home = home(app).ok();
+    w.refs
+        .iter()
+        .map(|r| json!({ "path": r, "title": library::title_of(Path::new(r)), "persona": home.as_deref().is_some_and(|h| library::is_persona(h, r)) }))
+        .collect()
+}
+
+/// `--path` as an absolute, forward-slash path; relative paths are from the caller's worktree. Adding
+/// needs an existing Markdown file; removing takes the path as given (the file may be gone).
+fn md_path(caller: &str, path: &str, must_exist: bool) -> Result<String, String> {
+    if path.is_empty() {
+        return Err("--path 로 마크다운 파일을 지정해 주세요 (`maestro library list`)".into());
+    }
+    let p = Path::new(path);
+    let p = if p.is_absolute() { p.to_path_buf() } else { Path::new(caller).join(p) };
+    if must_exist {
+        if !p.extension().is_some_and(|e| e.eq_ignore_ascii_case("md")) {
+            return Err(format!("마크다운(.md) 파일만 참조할 수 있어요: {path}"));
+        }
+        if !p.is_file() {
+            return Err(format!("파일이 없어요: {}", worktree::norm(&p)));
+        }
+    }
+    Ok(worktree::norm(&p))
 }
 
 fn parent_of<'a>(all: &'a [WorktreeInfo], path: &str) -> Option<&'a WorktreeInfo> {
@@ -157,4 +228,31 @@ fn last_answer(app: &AppHandle, root: &str, path: &str) -> Option<String> {
         let texts: Vec<&str> = e["message"]["content"].as_array()?.iter().filter_map(|b| b["text"].as_str()).collect();
         (e["type"] == "assistant" && !texts.is_empty()).then(|| texts.join("\n"))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn md_path_resolves_and_checks() {
+        let dir = std::env::temp_dir().join("maestro-md-path-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("spec.md"), "# Spec").unwrap();
+        let caller = worktree::norm(&dir);
+        assert_eq!(md_path(&caller, "spec.md", true).unwrap(), format!("{caller}/spec.md"));
+        assert!(md_path(&caller, "missing.md", true).is_err());
+        assert!(md_path(&caller, "notes.txt", true).is_err());
+        assert!(md_path(&caller, "", true).is_err());
+        // removing a reference whose file is gone still works
+        assert_eq!(md_path(&caller, "gone.md", false).unwrap(), format!("{caller}/gone.md"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn done_note_truncates_long_answers() {
+        assert_eq!(done_note("api", Some("끝".into())), "[maestro] 워커 'api' 완료. 마지막 답변:\n끝");
+        let long = done_note("api", Some("가".repeat(2000)));
+        assert!(long.contains(&"가".repeat(1500)) && !long.contains(&"가".repeat(1501)) && long.contains("maestro read --to api"));
+    }
 }

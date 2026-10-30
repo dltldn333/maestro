@@ -1,0 +1,195 @@
+import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
+import { ipc } from "./ipc";
+import { Background, Handle, Panel, Position, ReactFlow, useEdgesState, useNodesState, useReactFlow, type Edge, type Node, type NodeProps } from "@xyflow/react";
+import { useShallow } from "zustand/react/shallow";
+import { ARROW, CanvasControls, Guide, MIN_ZOOM, treeLayout } from "./Canvas";
+import { GRID } from "./nodes/AgentNode";
+import { AgentLogo, agentLabel } from "./NewAgentDialog";
+import { StatusDot } from "./Sidebar";
+import { useStore, useWorktree, type Worktree } from "./store";
+import { isLightTheme, useSettings } from "./settings";
+
+// 11 × 7 grid cells
+const STRUCT_SIZE = { width: 264, height: 168 };
+type StructNode = Node<{ worktreePath: string }, "structure_card">;
+type Folder = Awaited<ReturnType<typeof ipc.libraryList>>[number];
+const SHOWN = 3; // reference chips on a card before "+N"
+
+/** One agent on the project map: who it is and what it refers to. Double-click goes in. */
+function StructureCard({ data }: NodeProps<StructNode>) {
+  const wt = useWorktree(data.worktreePath);
+  const repoDefault = useStore((s) => s.repos.find((r) => r.root === wt?.root)?.defaultBranch);
+  const [picking, setPicking] = useState(false);
+  if (!wt) return null;
+  const chips = [...wt.personas.map((title) => ({ title, persona: true })), ...wt.docs.map((title) => ({ title, persona: false }))];
+  return (
+    <div className="node struct-card" data-maestro={wt.isMaestro || undefined} title="더블클릭해서 들어가기">
+      <Handle type="target" id="top" position={Position.Top} className="struct-handle" isConnectable={false} />
+      <header>
+        <StatusDot w={wt} />
+        {wt.isMaestro && <span className="maestro-crown">♛</span>}
+        <b className="ellipsis">{wt.name}</b>
+        <span className="spacer" />
+        {wt.external && <span className="ext-badge">외부</span>}
+        <span title={agentLabel(wt.adapterId)}><AgentLogo id={wt.adapterId} size={14} /></span>
+      </header>
+      <div className="struct-desc small">
+        {wt.description || <span className="muted">{wt.isMaestro ? "워커들을 조율하는 마에스트로" : "설명 없음"}</span>}
+      </div>
+      <div className="struct-refs">
+        {chips.slice(0, SHOWN).map((c) => (
+          <span key={c.title} className={c.persona ? "persona-badge" : "doc-badge"} title={c.persona ? "페르소나" : "참조 문서"}>
+            {c.persona ? "♟" : "≡"} {c.title}
+          </span>
+        ))}
+        <button
+          className="ref-more nodrag"
+          title="참조 문서 전체 보기 · 선택"
+          onClick={() => setPicking(true)}
+          onDoubleClick={(e) => e.stopPropagation()}
+        >
+          {chips.length > SHOWN ? `+${chips.length - SHOWN}` : "+"}
+        </button>
+      </div>
+      {picking && createPortal(<RefPicker wt={wt} onClose={() => setPicking(false)} />, document.body)}
+      <div className="struct-foot muted small">
+        {wt.isMaestro ? `기준 ${wt.baseBranch ?? repoDefault}` : wt.branch}
+        {wt.workers.length ? ` · 워커 ${wt.workers.length}` : ""}
+      </div>
+      <Handle type="source" id="bottom" position={Position.Bottom} className="struct-handle" isConnectable={false} />
+    </div>
+  );
+}
+
+/**
+ * Every Markdown file this agent can refer to (the project's library and the personas), ticked where it
+ * already does. Ticking one links it: the agent's canvas gets a Markdown block with a reference line.
+ */
+function RefPicker({ wt, onClose }: { wt: Worktree; onClose: () => void }) {
+  const setError = useStore((s) => s.setError);
+  const [folders, setFolders] = useState<Folder[] | null>(null);
+  useEffect(() => void ipc.libraryList(wt.root).then(setFolders).catch(setError), [wt.root]);
+  const on = (path: string) => wt.refs.some((r) => r.toLowerCase() === path.toLowerCase());
+  const toggle = (path: string) =>
+    ipc.setRef(wt.root, wt.path, path, !on(path)).then(() => useStore.getState().refreshWorktrees(wt.root)).catch(setError);
+  // references made from the file tree, outside the library folders
+  const listed = new Set((folders ?? []).flatMap((f) => f.files.map((x) => x.path.toLowerCase())));
+  const others = wt.refs.filter((r) => !listed.has(r.toLowerCase()));
+  const row = (path: string, title: string, sub: string) => (
+    <label key={path} className="ref-row" title={path}>
+      <input type="checkbox" checked={on(path)} onChange={() => toggle(path)} />
+      <span className="ellipsis">{title}</span>
+      <span className="muted small ellipsis">{sub}</span>
+    </label>
+  );
+  return (
+    <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal ref-picker" onKeyDown={(e) => e.key === "Escape" && onClose()}>
+        <h3>참조 문서 · {wt.name}</h3>
+        <p className="muted small">고르면 이 에이전트의 캔버스에 마크다운 블록이 생기고 참조로 연결돼요. 페르소나는 그 역할을 맡게 해요.</p>
+        <div className="ref-list">
+          {!folders && <span className="muted"><span className="spinner" /> 읽는 중…</span>}
+          {folders?.map((f) => (
+            <div key={f.folder}>
+              <div className="ref-folder muted small">{f.persona ? "♟ 페르소나" : f.folder.split(/[\\/]/).pop()}</div>
+              {f.files.map((x) => row(x.path, x.title, x.path.slice(f.folder.replace(/\\/g, "/").length + 1)))}
+              {!f.files.length && <div className="muted small ref-row">마크다운 없음</div>}
+            </div>
+          ))}
+          {others.length > 0 && (
+            <div>
+              <div className="ref-folder muted small">보관함 밖의 파일</div>
+              {others.map((p) => row(p, p.split("/").pop() ?? p, p))}
+            </div>
+          )}
+          {folders && folders.length <= 1 && <p className="muted small">마크다운 폴더는 에이전트 캔버스의 보관함에서 등록해요.</p>}
+        </div>
+        <div className="modal-actions">
+          <button className="primary" autoFocus onClick={onClose}>닫기</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const nodeTypes = { structure_card: StructureCard };
+
+/**
+ * The project canvas: only the structure, always laid out as a tree (Maestro on top). Nothing is edited
+ * here; links and references are made on the Maestro canvas. Double-click a card to go into it.
+ */
+export function ProjectMap({ root, onNewAgent, onNewMaestro, onOpenSettings }: {
+  root: string;
+  onNewAgent: () => void;
+  onNewMaestro: () => void;
+  onOpenSettings?: () => void;
+}) {
+  const worktrees = useStore(useShallow((s) => s.worktrees.filter((w) => w.root === root)));
+  const repoName = useStore((s) => s.repos.find((r) => r.root === root)?.name ?? "");
+  const select = useStore((s) => s.select);
+  const theme = useSettings((s) => s.theme);
+  const { fitView } = useReactFlow();
+  const [nodes, setNodes, onNodesChange] = useNodesState<StructNode>([]);
+  const [edges, setEdges] = useEdgesState<Edge>([]);
+  const maestro = worktrees.find((w) => w.isMaestro);
+
+  // relaid only when the structure changes; each card reads its own details from the store
+  const shape = worktrees.map((w) => `${w.path}>${w.workers.join(",")}`).join("\n");
+  useEffect(() => {
+    const pos = treeLayout(worktrees, () => STRUCT_SIZE);
+    setNodes(worktrees.map((w) => ({ id: `s_${w.path}`, type: "structure_card", position: pos.get(w.path)!, ...STRUCT_SIZE, data: { worktreePath: w.path } })));
+    const byPath = new Map(worktrees.map((w) => [w.path.toLowerCase(), w.path]));
+    setEdges(
+      worktrees.flatMap((w) =>
+        w.workers.flatMap((c) => {
+          const child = byPath.get(c.toLowerCase());
+          return child ? [{ id: `${w.path}>${child}`, source: `s_${w.path}`, target: `s_${child}`, sourceHandle: "bottom", targetHandle: "top", className: "orch", animated: true, markerEnd: ARROW }] : [];
+        }),
+      ),
+    );
+    requestAnimationFrame(() => fitView({ padding: 0.2, maxZoom: 1 }));
+  }, [shape]);
+
+  return (
+    <ReactFlow
+      nodes={nodes}
+      edges={edges}
+      nodeTypes={nodeTypes}
+      onNodesChange={onNodesChange}
+      nodesDraggable={false}
+      nodesConnectable={false}
+      elementsSelectable={false}
+      onNodeDoubleClick={(_, n) => select(n.data.worktreePath)}
+      zoomOnDoubleClick={false}
+      minZoom={MIN_ZOOM}
+      zoomOnScroll={false}
+      panOnScroll
+      zoomActivationKeyCode="Control"
+      colorMode={isLightTheme(theme) ? "light" : "dark"}
+      proOptions={{ hideAttribution: true }}
+    >
+      <Background gap={GRID} />
+      <CanvasControls onOpenSettings={onOpenSettings} />
+      <Panel position="top-left">
+        <div className="canvas-tools">
+          <span className="crumb">{repoName}</span>
+          <button className="primary" onClick={onNewAgent}>+ 워크트리</button>
+          {maestro ? (
+            <button title="마에스트로와 워커들이 일하는 캔버스" onClick={() => select(maestro.path)}>♛ 마에스트로 캔버스</button>
+          ) : (
+            <button title="프로젝트 폴더에서 워커들을 조율하는 에이전트" onClick={onNewMaestro}>♛ 마에스트로 만들기</button>
+          )}
+          <Guide key={root} text="프로젝트 구조만 보여주는 지도예요 · 카드를 더블클릭하면 그 에이전트로 들어가요 · 연결과 참조는 마에스트로 캔버스에서 바꿔요" />
+        </div>
+      </Panel>
+      {!worktrees.length && (
+        <div className="canvas-empty-center">
+          <div className="canvas-empty muted">
+            <b>+ 워크트리</b>로 에이전트를 고르면 격리된 워크트리에서 바로 실행돼요.
+          </div>
+        </div>
+      )}
+    </ReactFlow>
+  );
+}

@@ -11,9 +11,7 @@ export const ipc = {
   /** existingBranch: check out branchName as it is instead of making it new from baseBranch */
   createAgent: (req: { projectRoot: string; adapterId: string; permissionMode: string; branchName: string; baseBranch: string; existingBranch: boolean; name: string; description: string; model: string }) =>
     invoke<WorktreeInfo>("create_agent", { req }),
-  listBranches: (projectRoot: string) => invoke<Branch[]>("list_branches", { projectRoot }),
-  setBaseBranch: (projectRoot: string, branch: string) => invoke<void>("set_base_branch", { projectRoot, branch }),
-  libraryList: (projectRoot: string) =>
+  listBranches: (projectRoot: string) => invoke<Branch[]>("list_branches", { projectRoot }),  libraryList: (projectRoot: string) =>
     invoke<Array<{ folder: string; persona: boolean; files: Array<{ path: string; title: string }> }>>("library_list", { projectRoot }),
   personaCreate: (name: string) => invoke<string>("persona_create", { name }),
   librarySet: (projectRoot: string, folders: string[]) => invoke<void>("library_set", { projectRoot, folders }),

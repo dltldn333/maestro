@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Handle, Position, useReactFlow, useStore as useFlowStore, type NodeProps } from "@xyflow/react";
+import { Handle, NodeResizeControl, Position, useReactFlow, useStore as useFlowStore, type NodeProps } from "@xyflow/react";
+import { useSettings } from "../settings";
 import { listen } from "@tauri-apps/api/event";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -23,31 +24,44 @@ export const TERM_SIZES: Record<TerminalSize, { width: number; height: number }>
   L: { width: 864, height: 720 },
 };
 
-/** An agent block on the worktree canvas: the agent panel plus a size picker and an input handle. */
+/** How far an agent block can be resized (grid multiples): small enough to stay readable, not past a screen. */
+export const AGENT_LIMITS = { minWidth: 18 * GRID, minHeight: 14 * GRID, maxWidth: 50 * GRID, maxHeight: 40 * GRID };
+export const clampAgentSize = (width: number, height: number) => ({
+  width: Math.min(AGENT_LIMITS.maxWidth, Math.max(AGENT_LIMITS.minWidth, Math.round(width / GRID) * GRID)),
+  height: Math.min(AGENT_LIMITS.maxHeight, Math.max(AGENT_LIMITS.minHeight, Math.round(height / GRID) * GRID)),
+});
+
+/**
+ * An agent block on an agent canvas: the agent panel, resized by dragging its bottom-right corner, with
+ * link points on every side (workers, references) and an input on the left for prompt blocks.
+ */
 export function AgentNode({ id, data }: NodeProps<TerminalFlowNode>) {
   const lod = useFlowStore((s) => s.transform[2] < LOD_ZOOM);
   const { updateNode } = useReactFlow();
-  const size = data.size ?? "M";
+  const isMaestro = useWorktree(data.worktreePath)?.isMaestro;
+  const setSettings = useSettings((s) => s.set);
   return (
-    <AgentPanel
-      className="node node-agent"
-      path={data.worktreePath}
-      view={data.view ?? "chat"}
-      onView={(v) => updateNode(id, { data: { ...data, view: v } })}
-      lod={lod}
-      extra={
-        <>
-          <Handle type="target" position={Position.Left} />
-          <span className="seg" title="블록 크기">
-            {(Object.keys(TERM_SIZES) as TerminalSize[]).map((s) => (
-              <button key={s} data-on={s === size || undefined} onClick={() => updateNode(id, { ...TERM_SIZES[s], data: { ...data, size: s } })}>
-                {s}
-              </button>
-            ))}
-          </span>
-        </>
-      }
-    />
+    <>
+      {/* outside the panel so they sit on the block's edges, not its header */}
+      {([["top", Position.Top], ["right", Position.Right], ["bottom", Position.Bottom], ["left", Position.Left]] as const).map(([side, pos]) => (
+        <Handle key={side} id={side} type="source" position={pos} className="wt-handle" />
+      ))}
+      <NodeResizeControl position="bottom-right" className="agent-resize" {...AGENT_LIMITS} />
+      <AgentPanel
+        className="node node-agent"
+        path={data.worktreePath}
+        view={data.view ?? "chat"}
+        onView={(v) => updateNode(id, { data: { ...data, view: v } })}
+        lod={lod}
+        extra={
+          <>
+            <Handle type="target" position={Position.Left} />
+            {/* the Maestro lives on its canvas; a worktree can fill the stage */}
+            {!isMaestro && <button title="전체 화면으로" onClick={() => setSettings({ agentLayout: "full" })}>전체 화면</button>}
+          </>
+        }
+      />
+    </>
   );
 }
 

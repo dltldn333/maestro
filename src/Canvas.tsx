@@ -21,13 +21,12 @@ import "@xyflow/react/dist/style.css";
 import { useShallow } from "zustand/react/shallow";
 import { ipc } from "./ipc";
 import { PromptNode } from "./nodes/PromptNode";
-import { AgentNode, GRID, TERM_SIZES } from "./nodes/AgentNode";
+import { AgentNode, GRID, TERM_SIZES, clampAgentSize } from "./nodes/AgentNode";
 import { CARD_SIZE, WorktreeCard } from "./nodes/WorktreeCard";
 import { MD_SIZE, MarkdownBlock } from "./nodes/MarkdownBlock";
 import { LibraryPanel, MD_MIME } from "./LibraryPanel";
 import { useStore, type Worktree } from "./store";
 import { ViewMap } from "./ViewMap";
-import { LayoutToggle } from "./AgentFull";
 import { isLightTheme, motionMs, useSettings } from "./settings";
 import { GearIcon } from "./SettingsDialog";
 import type { CanvasEdge, CanvasNode, CanvasStateSchema } from "./types";
@@ -59,15 +58,19 @@ function LinkEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targ
 }
 const edgeTypes = { link: LinkEdge };
 // every line points from its source to its target
-const ARROW = { type: MarkerType.ArrowClosed, width: 16, height: 16 };
-const MIN_ZOOM = 0.15;
+export const ARROW = { type: MarkerType.ArrowClosed, width: 16, height: 16 };
+export const MIN_ZOOM = 0.15;
 const MAX_ZOOM = 2;
 const snap = (v: number) => Math.round(v / GRID) * GRID;
 
 // Older canvases may hold free-form sizes/positions; pull them onto the grid and size presets.
 const normalize = (n: CanvasNode): CanvasNode => {
   const position = { x: snap(n.position.x), y: snap(n.position.y) };
-  if (n.type === "pty_terminal_node") return { ...n, position, ...TERM_SIZES[n.data.size ?? "M"], deletable: false };
+  if (n.type === "pty_terminal_node") {
+    // a dragged size is kept (within limits); older canvases only have a preset
+    const preset = TERM_SIZES[n.data.size ?? "M"];
+    return { ...n, position, ...clampAgentSize(n.width ?? preset.width, n.height ?? preset.height), deletable: false };
+  }
   if (n.type === "worktree_card") return { ...n, position, ...CARD_SIZE, deletable: false };
   if (n.type === "markdown_block") return { ...n, position, ...MD_SIZE };
   return { ...n, position, width: undefined, height: undefined };
@@ -76,7 +79,7 @@ const normalize = (n: CanvasNode): CanvasNode => {
 const folderName = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
 /** A "?" that shows how to use this canvas: pops up for a few seconds on arrival, then on demand. */
-function Guide({ text }: { text: string }) {
+export function Guide({ text }: { text: string }) {
   const [open, setOpen] = useState(true);
   useEffect(() => {
     const t = setTimeout(() => setOpen(false), 6000);
@@ -90,12 +93,14 @@ function Guide({ text }: { text: string }) {
   );
 }
 
+type Size = { width: number; height: number };
+
 /**
- * Card positions as a tree: the Maestro on top, every worker below its parent, siblings side by side.
- * Worktrees nobody leads hang under the Maestro too (without a line), so the overview reads top-down.
+ * Block positions as a tree: the Maestro on top, every worker below its parent, siblings side by side.
+ * Worktrees nobody leads hang under the Maestro too (without a line), so the canvas reads top-down.
  */
-export function treeLayout(worktrees: Worktree[]): Map<string, { x: number; y: number }> {
-  const W = CARD_SIZE.width, GAP_X = 2 * GRID, STEP_Y = CARD_SIZE.height + 4 * GRID;
+export function treeLayout(worktrees: Worktree[], size: (w: Worktree) => Size = () => CARD_SIZE): Map<string, { x: number; y: number }> {
+  const GAP_X = 2 * GRID, GAP_Y = 4 * GRID;
   const key = (p: string) => p.toLowerCase();
   const byPath = new Map(worktrees.map((w) => [key(w.path), w]));
   const led = new Set(worktrees.flatMap((w) => w.workers.map(key)));
@@ -110,7 +115,7 @@ export function treeLayout(worktrees: Worktree[]): Map<string, { x: number; y: n
     const kids: T[] = [];
     for (const c of w === maestro ? [...own, ...loose] : own) if (!seen.has(key(c.path))) kids.push(build(c));
     const kidsWidth = kids.reduce((s, k) => s + k.width, 0) + GAP_X * Math.max(0, kids.length - 1);
-    return { w, kids, kidsWidth, width: Math.max(W, kidsWidth) };
+    return { w, kids, kidsWidth, width: Math.max(size(w).width, kidsWidth) };
   };
   const trees: T[] = [];
   // the backend keeps links a tree; the second loop only catches what a broken file would leave unreachable
@@ -118,10 +123,11 @@ export function treeLayout(worktrees: Worktree[]): Map<string, { x: number; y: n
 
   const out = new Map<string, { x: number; y: number }>();
   const place = (t: T, x: number, y: number) => {
-    out.set(t.w.path, { x: snap(x + (t.width - W) / 2), y });
+    const s = size(t.w);
+    out.set(t.w.path, { x: snap(x + (t.width - s.width) / 2), y });
     let cx = x + (t.width - t.kidsWidth) / 2;
     for (const k of t.kids) {
-      place(k, cx, y + STEP_Y);
+      place(k, cx, y + s.height + GAP_Y);
       cx += k.width + GAP_X;
     }
   };
@@ -148,7 +154,7 @@ const Icon = ({ d }: { d: string }) => (
 );
 
 /** Bottom-left zoom bar: − zoom% + | fit. Clicking the percentage resets to 100%. */
-function CanvasControls({ onOpenSettings }: { onOpenSettings?: () => void }) {
+export function CanvasControls({ onOpenSettings }: { onOpenSettings?: () => void }) {
   const zoom = useFlowStore((s) => s.transform[2]);
   const { zoomIn, zoomOut, zoomTo, fitView } = useReactFlow();
   const duration = motionMs(useSettings.getState());
@@ -173,27 +179,26 @@ function CanvasControls({ onOpenSettings }: { onOpenSettings?: () => void }) {
 }
 
 /**
- * Two levels, one component:
- * - project canvas (no `scope`): a summary card per worktree; clicking a card opens it
- * - worktree canvas (`scope` = worktree path): that worktree's agent block plus free prompt blocks
- * Each level saves its own layout.
+ * The working canvases (the project map, ProjectMap.tsx, only shows the structure):
+ * - Maestro canvas (`scope` = the Maestro): its agent block on top, a summary card per worktree below,
+ *   hierarchy and reference lines, Markdown blocks. Links are made and cut here.
+ * - worktree canvas (`scope` = a worktree): that worktree's agent block plus free prompt blocks
+ * Each saves its own layout.
  */
-export function Canvas({ root, scope, onNewAgent, onNewMaestro, onOpenSettings }: {
+export function Canvas({ root, scope, onNewAgent, onOpenSettings }: {
   root: string;
-  scope?: string;
+  scope: string;
   onNewAgent: (opts?: { parentPath?: string }) => void;
-  onNewMaestro: () => void;
   onOpenSettings?: () => void;
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<CanvasNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<CanvasEdge>([]);
   const { getViewport, setViewport, screenToFlowPosition, fitView } = useReactFlow();
   const needsFit = useRef(false); // no saved viewport yet → frame the blocks once they exist
-  const fresh = useRef(false); // this canvas had no saved layout
-  const worktrees = useStore(useShallow((s) => s.worktrees.filter((w) => w.root === root && (!scope || w.path === scope))));
-  const repoName = useStore((s) => s.repos.find((r) => r.root === root)?.name ?? "");
+  const untreed = useRef(false); // no saved layout, or one from before the tree layout
+  const hub = useStore((s) => s.worktrees.some((w) => w.root === root && w.isMaestro && w.path === scope));
+  const worktrees = useStore(useShallow((s) => s.worktrees.filter((w) => w.root === root && (hub || w.path === scope))));
   const select = useStore((s) => s.select);
-  const setActive = useStore((s) => s.setActive);
   const setError = useStore((s) => s.setError);
   const theme = useSettings((s) => s.theme);
   // bumped on every layout load, so the worktree sync below runs after *each* load. Otherwise a reload
@@ -204,8 +209,11 @@ export function Canvas({ root, scope, onNewAgent, onNewMaestro, onOpenSettings }
   const { setCenter, getZoom, getNode } = useReactFlow<CanvasNode, CanvasEdge>();
   const justAdded = useRef<{ x: number; y: number } | null>(null);
   const wtKey = worktrees.map((w) => `${w.path}|${w.branch}`).join("\n");
-  const canvasKey = scope ? folderName(scope) : "overview";
-  const managed = scope ? "pty_terminal_node" : "worktree_card"; // the node type that mirrors worktrees here
+  const canvasKey = hub ? "overview" : folderName(scope); // "overview": the old project canvas, now the Maestro's
+  // the Maestro (and a worktree on its own canvas) is a full agent block; workers are summary cards
+  const kind = (w: Worktree) => (!hub || w.isMaestro ? "pty_terminal_node" : "worktree_card");
+  const mirrors = (n: CanvasNode) => n.type === "worktree_card" || n.type === "pty_terminal_node";
+  const pathOf = (n: CanvasNode) => (n.data as { worktreePath: string }).worktreePath;
 
   useEffect(() => {
     ipc.loadCanvas(root, canvasKey).then((saved) => {
@@ -215,7 +223,8 @@ export function Canvas({ root, scope, onNewAgent, onNewMaestro, onOpenSettings }
         setEdges(state.edges.map((e) => ({ ...e, animated: true, markerEnd: ARROW })));
         setViewport(state.viewport);
       }
-      needsFit.current = fresh.current = !state;
+      needsFit.current = !state;
+      untreed.current = !state?.tree;
       setLoadGen((g) => g + 1);
     }).catch(setError);
   }, [root, canvasKey]);
@@ -224,11 +233,11 @@ export function Canvas({ root, scope, onNewAgent, onNewMaestro, onOpenSettings }
   useEffect(() => {
     if (!loaded) return;
     const paths = new Set(worktrees.map((w) => w.path));
-    const mirrors = (n: CanvasNode) => n.type === managed;
     setNodes((ns) => {
-      // free blocks (prompt, markdown) stay; a mirrored block stays only while its worktree exists
-      const kept = ns.filter((n) => !mirrors(n) || paths.has((n.data as { worktreePath: string }).worktreePath));
-      const have = new Set(kept.filter(mirrors).map((n) => (n.data as { worktreePath: string }).worktreePath));
+      // free blocks (prompt, markdown) stay; a mirrored block stays while its worktree exists and it's the
+      // right kind (a canvas saved before the Maestro became an agent block has a card for it)
+      const kept = ns.filter((n) => !mirrors(n) || worktrees.some((w) => w.path === pathOf(n) && kind(w) === n.type));
+      const have = new Set(kept.filter(mirrors).map(pathOf));
       // first grid slot no block already covers (cards get moved around, so "the next index" may be taken)
       const taken = [...kept];
       const freeSlot = () => {
@@ -244,7 +253,12 @@ export function Canvas({ root, scope, onNewAgent, onNewMaestro, onOpenSettings }
       const added = worktrees
         .filter((w) => !have.has(w.path))
         .map((w): CanvasNode => {
-          if (scope) return { id: `term_${w.path}`, type: "pty_terminal_node", position: { x: 360, y: 0 }, ...TERM_SIZES.M, deletable: false, data: { worktreePath: w.path, branchName: w.branch } };
+          if (kind(w) === "pty_terminal_node") {
+            // on the Maestro canvas it keeps the card_ id, so lines and links treat it like any card
+            const block: CanvasNode = { id: hub ? `card_${w.path}` : `term_${w.path}`, type: "pty_terminal_node", position: hub ? freeSlot() : { x: 360, y: 0 }, ...TERM_SIZES.M, deletable: false, data: { worktreePath: w.path, branchName: w.branch } };
+            taken.push(block);
+            return block;
+          }
           const card: CanvasNode = {
             id: `card_${w.path}`,
             type: "worktree_card",
@@ -256,7 +270,7 @@ export function Canvas({ root, scope, onNewAgent, onNewMaestro, onOpenSettings }
           taken.push(card);
           return card;
         });
-      if (!scope && added.length) justAdded.current = added[added.length - 1].position;
+      if (hub && added.length) justAdded.current = added[added.length - 1].position;
       return kept.length === ns.length && !added.length ? ns : [...kept, ...added];
     });
     setEdges((es) => es.filter((e) => !e.target.startsWith("term_") || paths.has(e.target.slice(5))));
@@ -284,6 +298,7 @@ export function Canvas({ root, scope, onNewAgent, onNewMaestro, onOpenSettings }
         activeSkillId: "",
         activeThemeId: "theme_default_dark",
         viewport: getViewport(),
+        tree: 1,
         nodes: nodes.map(({ id, type, position, width, height, data }) => ({ id, type, position, width, height, data }) as CanvasStateSchema["nodes"][number]),
         // Maestro lines aren't saved here: they're drawn from the Maestro's workers
         edges: edges.filter((e) => e.data?.kind !== "orchestrates").map(({ id, source, target, data }) => ({ id, source, target, data })),
@@ -327,11 +342,16 @@ export function Canvas({ root, scope, onNewAgent, onNewMaestro, onOpenSettings }
     ]);
   };
 
-  // ---- project canvas lines, drawn from agent settings (the backend is the truth):
+  // ---- Maestro canvas lines, drawn from agent settings (the backend is the truth):
   //   parent card → worker card (hierarchy), Markdown block → card (reference)
-  const maestro = scope ? undefined : worktrees.find((w) => w.isMaestro);
+  const self = worktrees.find((w) => w.path === scope); // this canvas's own agent
   const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
-  const cardOf = (id: string | null) => (id ? worktrees.find((w) => `card_${w.path}` === id) : undefined);
+  // the agent a block stands for: a worker card, or an agent block (card_ ids on the Maestro canvas, term_ inside a worktree)
+  const idOf = (path: string) => (hub ? `card_${path}` : `term_${path}`);
+  const cardOf = (id: string | null) => {
+    const n = id ? nodes.find((x) => x.id === id) : undefined;
+    return n && mirrors(n) ? worktrees.find((w) => w.path === pathOf(n)) : undefined;
+  };
   const mdOf = (id: string | null) => nodes.find((n) => n.id === id && n.type === "markdown_block") as { data: { path: string } } | undefined;
   const reload = () => useStore.getState().refreshWorktrees(root);
   const act = (p: Promise<unknown>) => p.then(reload).catch(setError);
@@ -350,7 +370,7 @@ export function Canvas({ root, scope, onNewAgent, onNewMaestro, onOpenSettings }
   const [layoutTick, setLayoutTick] = useState(0);
   const linkKey = worktrees.map((w) => `${w.workers.join(",")}|${w.refs.join(",")}`).join("\n");
   useEffect(() => {
-    if (!loaded || scope) return;
+    if (!loaded) return;
     setEdges((es) => {
       const others = es.filter((e) => e.data?.kind !== "orchestrates" && e.data?.kind !== "reference");
       const line = (id: string, source: string, target: string, kind: "orchestrates" | "reference"): CanvasEdge => {
@@ -359,40 +379,90 @@ export function Canvas({ root, scope, onNewAgent, onNewMaestro, onOpenSettings }
       };
       const lines: CanvasEdge[] = [];
       for (const w of worktrees) {
-        for (const child of worktrees.filter((c) => w.workers.some((p) => same(p, c.path)))) {
-          lines.push(line(`orch_${w.path}>${child.path}`, `card_${w.path}`, `card_${child.path}`, "orchestrates"));
+        // hierarchy lines only where the workers are on the canvas (the Maestro's)
+        for (const child of hub ? worktrees.filter((c) => w.workers.some((p) => same(p, c.path))) : []) {
+          lines.push(line(`orch_${w.path}>${child.path}`, idOf(w.path), idOf(child.path), "orchestrates"));
         }
         for (const md of nodes.filter((n) => n.type === "markdown_block" && w.refs.some((r) => same(r, (n.data as { path: string }).path)))) {
-          lines.push(line(`ref_${md.id}>${w.path}`, md.id, `card_${w.path}`, "reference"));
+          lines.push(line(`ref_${md.id}>${w.path}`, md.id, idOf(w.path), "reference"));
         }
       }
       return [...others, ...lines];
     });
   }, [loadGen, wtKey, linkKey, layoutTick, nodes.length]);
 
-  // Tree layout. A load keeps the saved positions (cards you moved stay put); after that, a new worktree
-  // or a changed link re-lays the tree, and so does the 트리 정렬 button. Markdown blocks aren't touched.
-  const arrange = () => {
-    const pos = treeLayout(worktrees);
-    setNodes((ns) => ns.map((n) => {
-      const p = n.type === "worktree_card" && pos.get((n.data as { worktreePath: string }).worktreePath);
-      return p ? { ...n, position: p } : n;
-    }));
+  // References stay two-way: one added elsewhere (project canvas, the `maestro` CLI) shows up here as a
+  // Markdown block linked to this canvas's agent; one removed elsewhere takes its block away (unless
+  // another agent on this canvas still refers to it). Blocks dropped but not linked yet are left alone.
+  const selfRefs = (self?.refs ?? []).join("\n");
+  const lastRefs = useRef<string[] | null>(null);
+  useEffect(() => {
+    if (!loaded || !self) return;
+    const refs = self.refs, prev = lastRefs.current;
+    lastRefs.current = refs;
+    const gone = (prev ?? []).filter((p) => !refs.some((r) => same(r, p)) && !worktrees.some((w) => w !== self && w.refs.some((r) => same(r, p))));
+    const mdPath = (n: CanvasNode) => (n.type === "markdown_block" ? n.data.path : null);
+    const missing = refs.filter((r) => !nodes.some((n) => mdPath(n) !== null && same(mdPath(n)!, r)));
+    if (!gone.length && !missing.length) return;
+    let live = true;
+    Promise.all(missing.map((p) => ipc.mdTitle(p).catch(() => p.split("/").pop() ?? p))).then((titles) => {
+      if (!live) return;
+      setNodes((ns) => {
+        const kept = ns.filter((n) => !(mdPath(n) !== null && gone.some((g) => same(g, mdPath(n)!))));
+        // stacked down the agent block's left side, below the Markdown blocks already there
+        const agent = ns.find((n) => n.id === idOf(self.path));
+        const x0 = (agent?.position.x ?? 0) - MD_SIZE.width - 2 * GRID, y0 = agent?.position.y ?? 0;
+        const stacked = kept.filter((n) => n.type === "markdown_block" && n.position.x === x0).length;
+        const added = missing
+          .filter((p) => !kept.some((n) => mdPath(n) !== null && same(mdPath(n)!, p)))
+          .map((p, i): CanvasNode => ({
+            id: `md_${Date.now()}_${i}`,
+            type: "markdown_block",
+            position: { x: x0, y: y0 + (stacked + i) * (MD_SIZE.height + GRID) },
+            ...MD_SIZE,
+            data: { path: p, title: titles[missing.indexOf(p)] },
+          }));
+        return [...kept, ...added];
+      });
+    });
+    return () => {
+      live = false;
+    };
+  }, [loaded, selfRefs]);
+
+  // Tree layout is the default: a new canvas (or one saved before the tree layout) starts arranged, and so
+  // does any change of worktrees or links. Blocks you drag stay where you put them (saved with the
+  // canvas) until then. Markdown blocks aren't touched.
+  const arrange = (animate = true) => {
+    setNodes((ns) => {
+      // each block's own size: the Maestro's agent block is bigger than a card
+      const sizeOf = (w: Worktree) => {
+        const n = ns.find((n) => n.id === `card_${w.path}`);
+        return { width: n?.width ?? CARD_SIZE.width, height: n?.height ?? CARD_SIZE.height };
+      };
+      const pos = treeLayout(worktrees, sizeOf);
+      return ns.map((n) => {
+        const p = mirrors(n) && pos.get(pathOf(n));
+        return p ? { ...n, position: p } : n;
+      });
+    });
     justAdded.current = null; // the fit below shows the new card; no separate pan
+    needsFit.current = false;
     requestAnimationFrame(() => {
       setLayoutTick((t) => t + 1); // lines pick their sides from the new positions
-      fitView({ padding: 0.15, maxZoom: 1, duration: motionMs(useSettings.getState()) * 1.5 });
+      fitView({ padding: 0.15, maxZoom: 1, duration: animate ? motionMs(useSettings.getState()) * 1.5 : 0 });
     });
   };
   const hierKey = worktrees.map((w) => `${w.path}>${w.workers.join(",")}`).join("\n");
   const baseline = useRef<{ gen: number; hier: string } | null>(null);
   useEffect(() => {
-    if (!loaded || scope || !worktrees.length) return;
+    if (!loaded || !hub || !worktrees.length) return;
     const b = baseline.current;
     baseline.current = { gen: loadGen, hier: hierKey };
     const justLoaded = !b || b.gen !== loadGen;
-    if (justLoaded ? !fresh.current : b?.hier === hierKey) return;
-    arrange();
+    if (justLoaded ? !untreed.current : b?.hier === hierKey) return;
+    untreed.current = false;
+    arrange(!justLoaded);
   }, [loadGen, hierKey]);
 
   // Markdown dropped from the library or the file tree → a Markdown block where it landed
@@ -421,24 +491,19 @@ export function Canvas({ root, scope, onNewAgent, onNewMaestro, onOpenSettings }
     ]);
   };
 
+  // prompt → agent: a pipe kept with the canvas; everything else is a hierarchy or reference link (agent settings)
+  const isPipe = (c: Connection | { source: string; target: string }) =>
+    nodes.find((n) => n.id === c.source)?.type === "prompt_input_primitive" && nodes.find((n) => n.id === c.target)?.type === "pty_terminal_node";
   const onConnect = useCallback(
     (c: Connection) => {
-      if (!scope) {
-        const l = linkFor(c.source, c.target);
-        if (l?.kind === "child") act(ipc.linkWorktrees(root, l.parent, l.child));
-        if (l?.kind === "ref") act(ipc.setRef(root, l.card, l.md, true));
-        return;
-      }
-      setEdges((es) => addEdge({ ...c, animated: true, markerEnd: ARROW, data: { kind: "command_pipe" as const } }, es));
+      if (isPipe(c)) return setEdges((es) => addEdge({ ...c, animated: true, markerEnd: ARROW, data: { kind: "command_pipe" as const } }, es));
+      const l = linkFor(c.source, c.target);
+      if (l?.kind === "child") act(ipc.linkWorktrees(root, l.parent, l.child));
+      if (l?.kind === "ref") act(ipc.setRef(root, l.card, l.md, true));
     },
-    [setEdges, scope, worktrees, nodes],
+    [setEdges, worktrees, nodes],
   );
-
-  // worktree canvas: prompt → agent pipes; project canvas: hierarchy and reference lines
-  const isValidConnection: IsValidConnection = (c) =>
-    scope
-      ? nodes.find((n) => n.id === c.source)?.type === "prompt_input_primitive" && nodes.find((n) => n.id === c.target)?.type === "pty_terminal_node"
-      : !!linkFor(c.source, c.target);
+  const isValidConnection: IsValidConnection = (c) => isPipe(c) || !!linkFor(c.source, c.target);
 
   return (
     <ReactFlow
@@ -456,22 +521,24 @@ export function Canvas({ root, scope, onNewAgent, onNewMaestro, onOpenSettings }
       // a line from a card dropped on empty canvas → a new worktree as that card's worker
       onConnectEnd={(_, cs) => {
         const from = cardOf(cs.fromNode?.id ?? null);
-        if (!scope && from && !cs.toNode) onNewAgent({ parentPath: from.path });
+        if (from && !cs.toNode) onNewAgent({ parentPath: from.path });
       }}
       onEdgesDelete={(gone) => {
         for (const e of gone) {
           const card = cardOf(e.target);
-          if (e.data?.kind === "orchestrates" && card) act(ipc.unlinkWorktrees(root, e.source.slice(5), card.path));
+          const parent = cardOf(e.source);
+          if (e.data?.kind === "orchestrates" && card && parent) act(ipc.unlinkWorktrees(root, parent.path, card.path));
           const md = mdOf(e.source);
           if (e.data?.kind === "reference" && card && md) act(ipc.setRef(root, card.path, md.data.path, false));
         }
       }}
       onNodesDelete={(gone) => {
-        // the last block of a Markdown file left the canvas → nobody refers to it anymore
+        // the last block of a Markdown file left this canvas → the agents here no longer refer to it
         for (const n of gone.filter((g) => g.type === "markdown_block")) {
           const path = (n.data as { path: string }).path;
           const left = nodes.some((o) => o.id !== n.id && o.type === "markdown_block" && same((o.data as { path: string }).path, path));
-          if (!left) act(ipc.setRef(root, "", path, false));
+          if (left) continue;
+          for (const w of worktrees.filter((w) => w.refs.some((r) => same(r, path)))) act(ipc.setRef(root, w.path, path, false));
         }
       }}
       onNodeDragStop={() => setLayoutTick((t) => t + 1)}
@@ -500,33 +567,21 @@ export function Canvas({ root, scope, onNewAgent, onNewMaestro, onOpenSettings }
         </Panel>
       )}
       <Panel position="top-left">
-        {scope ? (
-          <div className="canvas-tools">
-            <button title="프로젝트 캔버스로" onClick={() => setActive(root)}>← {repoName}</button>
-            <span className="crumb">{worktrees[0]?.name ?? folderName(scope)}</span>
-            <button onClick={addPrompt}>+ 프롬프트 블록</button>
-            <button data-on={libraryOpen || undefined} onClick={() => setLibraryOpen(!libraryOpen)}>보관함</button>
-            <LayoutToggle />
-            <Guide key={canvasKey} text="프롬프트 블록의 점을 에이전트 블록으로 끌면 연결돼요 · 보관함의 마크다운은 캔버스로 끌어 블록으로 써요" />
-          </div>
-        ) : (
-          <div className="canvas-tools">
-            <span className="crumb">{repoName}</span>
-            <button className="primary" onClick={() => onNewAgent()}>+ 워크트리</button>
-            {!maestro && <button title="프로젝트 폴더(메인 브랜치)에서 워커들을 조율하는 에이전트" onClick={onNewMaestro}>♛ 마에스트로</button>}
-            <button title="등록한 폴더의 마크다운을 블록으로 끌어오기" data-on={libraryOpen || undefined} onClick={() => setLibraryOpen(!libraryOpen)}>보관함</button>
-            <button title="마에스트로를 맨 위에, 워커를 아래로 정리" onClick={arrange}>트리 정렬</button>
-            <Guide key={canvasKey} text="카드의 점을 다른 카드로 끌면 상위 → 워커로 연결돼요 · 빈 곳에 놓으면 새 워커 · 마크다운 블록을 카드에 이으면 참조(페르소나) · 선을 눌러 × 로 끊기 · 더블클릭으로 들어가기" />
-          </div>
-        )}
-      </Panel>
-      {!scope && !worktrees.length && (
-        <div className="canvas-empty-center">
-          <div className="canvas-empty muted">
-            <b>+ 워크트리</b>로 에이전트를 고르면 격리된 워크트리에서 바로 실행돼요.
-          </div>
+        {/* the same toolbar on every agent canvas (the Maestro's and each worktree's) */}
+        <div className="canvas-tools">
+          <span className="crumb">
+            {self?.isMaestro && <span className="maestro-crown">♛ </span>}
+            {self?.name ?? folderName(scope)}
+          </span>
+          <button className="primary" title="이 에이전트의 워커로 새 워크트리 만들기" onClick={() => onNewAgent({ parentPath: scope })}>+ 워커</button>
+          <button title="에이전트 블록에 이어서 지시를 보내는 블록" onClick={addPrompt}>+ 프롬프트 블록</button>
+          <button title="등록한 폴더의 마크다운을 블록으로 끌어오기" data-on={libraryOpen || undefined} onClick={() => setLibraryOpen(!libraryOpen)}>보관함</button>
+          <Guide
+            key={canvasKey}
+            text="블록의 점을 다른 블록으로 끌어 연결해요: 에이전트 → 워커, 마크다운 → 에이전트(참조), 프롬프트 → 에이전트 · 빈 곳에 놓으면 새 워커 · 선을 눌러 × 로 끊기 · 블록 오른쪽 아래 모서리를 끌어 크기 조절 · 워커 카드를 더블클릭하면 그 에이전트 캔버스로"
+          />
         </div>
-      )}
+      </Panel>
     </ReactFlow>
   );
 }

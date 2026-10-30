@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Canvas } from "./Canvas";
+import { ProjectMap } from "./ProjectMap";
 import { NewAgentDialog } from "./NewAgentDialog";
 import { RightPanel } from "./RightPanel";
 import { SettingsDialog } from "./SettingsDialog";
@@ -52,9 +53,14 @@ export default function App() {
   const [showLeft, setShowLeft] = usePanelPref("maestro.showLeft");
   const [showRight, setShowRight] = usePanelPref("maestro.showRight");
   const activeRepo = repos.find((r) => r.root === activeRoot);
-  // the selected worktree's canvas, or the project canvas when none is selected
+  // nothing selected → the project map; the Maestro → its canvas; a worktree → its full view or canvas
   const agentLayout = useSettings((s) => s.agentLayout);
   const scope = useStore((s) => s.worktrees.find((w) => w.path === s.selectedPath && w.root === activeRoot)?.path);
+  const atMaestro = useStore((s) => s.worktrees.some((w) => w.path === scope && w.isMaestro));
+  // until the repos and this project's worktrees are read, "add a repo" or an empty map would be wrong
+  const loading = useStore((s) => !s.ready || (!!s.activeRoot && !s.scanned.includes(s.activeRoot)));
+  // the sidebar's settings button is out of reach while it's hidden → show one by the zoom bar
+  const openSettingsHere = showLeft ? undefined : () => setSettingsOpen(true);
 
   useEffect(() => {
     loadRepos().catch(setError);
@@ -105,17 +111,27 @@ export default function App() {
       <div className="shell">
         <Sidebar onNewWorktree={setDialogRepo} onOpenSettings={() => setSettingsOpen(true)} />
         <main className="stage">
-          {activeRoot && scope && agentLayout === "full" ? (
-            <AgentFull key={scope} root={activeRoot} path={scope} />
-          ) : activeRoot ? (
+          {loading ? (
+            <div className="empty">
+              <p className="muted"><span className="spinner" /> 저장소와 워크트리를 읽는 중…</p>
+            </div>
+          ) : activeRoot && scope && !atMaestro && agentLayout === "full" ? (
+            <AgentFull key={scope} path={scope} />
+          ) : activeRoot && scope ? (
             <Canvas
-              key={`${activeRoot}|${scope ?? ""}`}
+              key={`${activeRoot}|${scope}`}
               root={activeRoot}
               scope={scope}
               onNewAgent={(o) => activeRepo && setDialog({ repo: activeRepo, ...o })}
+              onOpenSettings={openSettingsHere}
+            />
+          ) : activeRoot ? (
+            <ProjectMap
+              key={activeRoot}
+              root={activeRoot}
+              onNewAgent={() => activeRepo && setDialog({ repo: activeRepo })}
               onNewMaestro={() => activeRepo && setDialog({ repo: activeRepo, maestro: true })}
-              // the sidebar's settings button is out of reach while it's hidden → show one by the zoom bar
-              onOpenSettings={showLeft ? undefined : () => setSettingsOpen(true)}
+              onOpenSettings={openSettingsHere}
             />
           ) : (
             <div className="empty">

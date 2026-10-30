@@ -17,11 +17,16 @@ export type Worktree = {
   external: boolean;
   personas: string[];
   baseBranch: string | null;
+  docs: string[];
   status: AgentStatus;
   unread: boolean; // finished a turn while not selected (Orca-style attention dot)
 };
 
 type Store = {
+  /** the repo list has been read once (before that, "no repos" would be a lie) */
+  ready: boolean;
+  /** repos whose worktrees have been read at least once (or failed to read) */
+  scanned: string[];
   repos: Repo[];
   activeRoot: string | null;
   worktrees: Worktree[];
@@ -57,13 +62,26 @@ const fromInfo = (root: string, w: WorktreeInfo, prev?: Worktree): Worktree => (
   external: w.external,
   personas: w.personas,
   baseBranch: w.baseBranch,
+  docs: w.docs,
   status: w.state.kind,
   unread: prev?.unread ?? false,
 });
 
 const same = (a: string, b: string | null) => !!b && a.toLowerCase() === b.toLowerCase();
 
+// where you were (project, agent), so a reload (Ctrl+R, HMR) comes back to it; storage may be unavailable
+const LOCATION_KEY = "maestro.location";
+const savedLocation = (): { root?: string; path?: string | null } => {
+  try {
+    return JSON.parse(localStorage.getItem(LOCATION_KEY) ?? "{}");
+  } catch {
+    return {};
+  }
+};
+
 export const useStore = create<Store>((set, get) => ({
+  ready: false,
+  scanned: [],
   repos: [],
   activeRoot: null,
   worktrees: [],
@@ -72,8 +90,17 @@ export const useStore = create<Store>((set, get) => ({
   setError: (e) => set({ error: e ? String(e) : "" }),
 
   loadRepos: async () => {
-    const repos = await ipc.listRepos();
-    set({ repos, activeRoot: get().activeRoot ?? repos[0]?.root ?? null });
+    // unreadable repos.json → show the (empty) app with the error rather than loading forever
+    const repos = await ipc.listRepos().catch((e) => (set({ ready: true }), Promise.reject(e)));
+    const last = savedLocation();
+    const back = repos.some((r) => r.root === last.root);
+    set({
+      ready: true,
+      repos,
+      activeRoot: get().activeRoot ?? (back ? last.root! : (repos[0]?.root ?? null)),
+      // the agent is shown once its worktree has loaded (App looks it up among them)
+      selectedPath: get().selectedPath ?? (back ? (last.path ?? null) : null),
+    });
     // one unreadable repo (moved, not a git repo anymore) must not keep the others from loading
     const failed = (await Promise.allSettled(repos.map((r) => get().refreshWorktrees(r.root))))
       .map((res, i) => (res.status === "rejected" ? `${repos[i].name}: ${res.reason}` : ""))
@@ -97,11 +124,15 @@ export const useStore = create<Store>((set, get) => ({
     });
   },
   refreshWorktrees: async (root) => {
-    const list = await ipc.listWorktrees(root);
-    set((s) => {
-      const prev = new Map(s.worktrees.map((w) => [w.path, w]));
-      return { worktrees: [...s.worktrees.filter((w) => w.root !== root), ...list.map((w) => fromInfo(root, w, prev.get(w.path)))] };
-    });
+    try {
+      const list = await ipc.listWorktrees(root);
+      set((s) => {
+        const prev = new Map(s.worktrees.map((w) => [w.path, w]));
+        return { worktrees: [...s.worktrees.filter((w) => w.root !== root), ...list.map((w) => fromInfo(root, w, prev.get(w.path)))] };
+      });
+    } finally {
+      if (!get().scanned.includes(root)) set((s) => ({ scanned: [...s.scanned, root] }));
+    }
   },
   setActive: (root) => set({ activeRoot: root, selectedPath: null }),
   select: (path) => set((s) => ({ selectedPath: path, worktrees: s.worktrees.map((w) => (w.path === path ? { ...w, unread: false } : w)) })),
@@ -129,5 +160,12 @@ export const useStore = create<Store>((set, get) => ({
   dropApproval: (id) => set((s) => ({ approvals: s.approvals.filter((a) => a.id !== id) })),
 }));
 
-export const useWorktree = (path: string) => useStore((s) => s.worktrees.find((w) => w.path === path));
+useStore.subscribe((s, prev) => {
+  if (!s.ready || (s.activeRoot === prev.activeRoot && s.selectedPath === prev.selectedPath)) return;
+  try {
+    localStorage.setItem(LOCATION_KEY, JSON.stringify({ root: s.activeRoot, path: s.selectedPath }));
+  } catch {}
+});
+
+export const useWorktree =(path: string) => useStore((s) => s.worktrees.find((w) => w.path === path));
 export const useApprovals = (path: string) => useStore(useShallow((s) => s.approvals.filter((a) => same(a.worktreePath, path))));
