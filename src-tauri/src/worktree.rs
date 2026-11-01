@@ -2,6 +2,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+    git_raw(dir, args).map(|s| s.trim_end().to_string())
+}
+
+fn git_raw(dir: &Path, args: &[&str]) -> Result<String, String> {
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(dir).args(args);
     #[cfg(windows)]
@@ -11,7 +15,7 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     }
     let out = cmd.output().map_err(|e| format!("git 실행 실패: {e}"))?;
     if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
         Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
     }
@@ -187,17 +191,12 @@ pub fn status(path: &str) -> Result<Vec<(String, String)>, String> {
         .collect())
 }
 
-/// Unified diff of one file against HEAD; untracked files show as all-added.
-pub fn diff(path: &str, file: &str) -> Result<String, String> {
-    let d = git(Path::new(path), &["diff", "HEAD", "--", file])?;
-    if !d.is_empty() {
-        return Ok(d);
-    }
-    match std::fs::read_to_string(Path::new(path).join(file)) {
-        Ok(text) => Ok(format!("+++ {file} (새 파일)\n{}", text.lines().map(|l| format!("+{l}\n")).collect::<String>())),
-        Err(_) => Ok(String::new()),
-    }
+/// A file's content at HEAD (`rel` relative to `path`); Err when it isn't in HEAD.
+pub fn show_head(path: &str, rel: &str) -> Result<String, String> {
+    // untrimmed: a dropped trailing newline would show as a change in the diff
+    git_raw(Path::new(path), &["show", &format!("HEAD:./{}", rel.replace('\\', "/"))])
 }
+
 
 #[cfg(test)]
 mod tests {

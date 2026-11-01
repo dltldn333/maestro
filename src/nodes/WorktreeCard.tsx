@@ -61,7 +61,7 @@ export function WorktreeCard({ data }: NodeProps<WorktreeCardNode>) {
       <header>
         <StatusDot w={wt} />
         {wt.isMaestro && <span className="maestro-crown" title="이 프로젝트의 마에스트로 (조율자)">♛</span>}
-        <b className="ellipsis" title={wt.isMaestro ? `프로젝트 폴더 · ${wt.branch}` : `브랜치 ${wt.branch}`}>{wt.name}</b>
+        <b className="ellipsis" title={`${wt.name}\n${wt.isMaestro ? `프로젝트 폴더 · ${wt.branch}` : `브랜치 ${wt.branch}`}`}>{wt.name}</b>
         {wt.isMaestro && <span className="muted small">워커 {wt.workers.length}</span>}
         <span className="spacer" />
         {wt.external && <span className="ext-badge" title="Maestro 밖에서 만든 워크트리 (폐기해도 폴더는 그대로)">외부</span>}

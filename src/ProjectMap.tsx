@@ -29,7 +29,7 @@ function StructureCard({ data }: NodeProps<StructNode>) {
       <header>
         <StatusDot w={wt} />
         {wt.isMaestro && <span className="maestro-crown">♛</span>}
-        <b className="ellipsis">{wt.name}</b>
+        <b className="ellipsis" title={wt.name}>{wt.name}</b>
         <span className="spacer" />
         {wt.external && <span className="ext-badge">외부</span>}
         <span title={agentLabel(wt.adapterId)}><AgentLogo id={wt.adapterId} size={14} /></span>
@@ -53,7 +53,7 @@ function StructureCard({ data }: NodeProps<StructNode>) {
         </button>
       </div>
       {picking && createPortal(<RefPicker wt={wt} onClose={() => setPicking(false)} />, document.body)}
-      <div className="struct-foot muted small">
+      <div className="struct-foot muted small" title={wt.isMaestro ? undefined : wt.branch}>
         {wt.isMaestro ? `기준 ${wt.baseBranch ?? repoDefault}` : wt.branch}
         {wt.workers.length ? ` · 워커 ${wt.workers.length}` : ""}
       </div>
@@ -160,7 +160,7 @@ export function ProjectMap({ root, onNewAgent, onNewMaestro, onOpenSettings }: {
       nodesDraggable={false}
       nodesConnectable={false}
       elementsSelectable={false}
-      onNodeDoubleClick={(_, n) => select(n.data.worktreePath)}
+      onNodeDoubleClick={(_, n) => select(n.data.worktreePath, true)}
       zoomOnDoubleClick={false}
       minZoom={MIN_ZOOM}
       zoomOnScroll={false}
@@ -176,7 +176,7 @@ export function ProjectMap({ root, onNewAgent, onNewMaestro, onOpenSettings }: {
           <span className="crumb">{repoName}</span>
           <button className="primary" onClick={onNewAgent}>+ 워크트리</button>
           {maestro ? (
-            <button title="마에스트로와 워커들이 일하는 캔버스" onClick={() => select(maestro.path)}>♛ 마에스트로 캔버스</button>
+            <button title="마에스트로와 워커들이 일하는 캔버스" onClick={() => select(maestro.path, true)}>♛ 마에스트로 캔버스</button>
           ) : (
             <button title="프로젝트 폴더에서 워커들을 조율하는 에이전트" onClick={onNewMaestro}>♛ 마에스트로 만들기</button>
           )}

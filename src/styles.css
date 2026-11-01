@@ -198,7 +198,36 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--m
 .brand svg { pointer-events: none; } /* let clicks hit the drag-region span */
 .shell { flex: 1; min-height: 0; display: flex; gap: 10px; padding: 0 12px 12px; }
 .shell > .sidebar, .shell > .stage, .shell > .rightpanel { border: 1px solid var(--mae-border); border-radius: var(--mae-frame-radius); overflow: hidden; }
-.stage { position: relative; flex: 1; min-width: 0; background: var(--mae-canvas); }
+.stage { position: relative; flex: 1; min-width: 0; background: var(--mae-canvas); display: flex; flex-direction: column; }
+.stage-body { position: relative; flex: 1; min-height: 0; }
+
+/* tabs above the stage (StageTabs.tsx): the project, then worktrees gone into and files opened */
+.stage-tabs { flex: none; display: flex; align-items: stretch; height: 28px; background: var(--mae-panel); border-bottom: 1px solid var(--mae-border); }
+.stage-tab-list { flex: 1; min-width: 0; display: flex; align-items: stretch; overflow-x: auto; scrollbar-width: none; }
+/* back / forward through the places visited (store nav) */
+.stage-nav { flex: none; display: flex; align-items: center; gap: 2px; padding: 0 4px; border-left: 1px solid var(--mae-border); }
+.stage-nav button.icon { display: grid; place-items: center; width: 24px; height: 22px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--mae-muted); }
+.stage-nav button.icon:hover:not(:disabled) { background: var(--mae-hover); color: var(--mae-text); }
+.stage-nav button.icon:disabled { opacity: .35; }
+.stage-tab { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 200px; padding: 0 6px 0 10px; font-size: 12px; color: var(--mae-muted); background: none; border: 0; border-right: 1px solid var(--mae-border); border-radius: 0; cursor: pointer; white-space: nowrap; flex: none; transition: background var(--mae-dur) var(--mae-ease), color var(--mae-dur) var(--mae-ease); }
+.stage-tab:hover { color: var(--mae-text); background: var(--mae-hover); }
+/* the open tab takes the stage's colour and drops the line under it, so it opens into the stage; accent line on top */
+.stage-tab[data-on] { color: var(--mae-text); background: var(--mae-canvas); margin-bottom: -1px; box-shadow: inset 0 2px 0 var(--mae-accent); }
+/* the project's own tab stands apart: accent text and a faint accent fill, stronger when open */
+.stage-tab.home { padding-right: 12px; font-weight: 600; color: var(--mae-accent); background: color-mix(in srgb, var(--mae-accent) 9%, var(--mae-panel)); }
+.stage-tab.home:hover { color: var(--mae-accent); background: color-mix(in srgb, var(--mae-accent) 15%, var(--mae-panel)); }
+.stage-tab.home[data-on] { color: var(--mae-accent); background: color-mix(in srgb, var(--mae-accent) 14%, var(--mae-canvas)); }
+.stage-tab.home .tree-icon { color: inherit; }
+/* preview tab (reused by the next single click): italic like VS Code */
+.stage-tab[data-preview] > .ellipsis { font-style: italic; }
+/* × on hover / on the open tab; a file with unsaved edits shows ● there instead until hovered */
+.stage-tab-x { flex: none; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px; background: none; color: inherit; opacity: 0; display: grid; place-items: center; }
+.stage-tab-x::before { content: "×"; font-size: 14px; line-height: 1; }
+.stage-tab:hover .stage-tab-x, .stage-tab[data-on] .stage-tab-x, .stage-tab-x[data-dirty] { opacity: 1; }
+.stage-tab-x:hover { background: var(--mae-selected); }
+.stage-tab-x[data-dirty]::before { content: "●"; font-size: 9px; color: var(--mae-accent); }
+.stage-tab-x[data-dirty]:hover::before { content: "×"; font-size: 14px; color: inherit; }
+.code-view[hidden] { display: none; }
 /* side panels slide shut by animating width; contents keep full width so they don't reflow mid-animation.
    They stay mounted so tab/tree state survives; visibility flips after the slide so hidden controls can't take focus. */
 .sidebar, .rightpanel { transition: width var(--mae-dur) var(--mae-ease), margin var(--mae-dur) var(--mae-ease), opacity var(--mae-dur) var(--mae-ease), visibility 0s; }
@@ -207,6 +236,33 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--m
 .app[data-hide-left] .sidebar, .app[data-hide-right] .rightpanel { width: 0; border-width: 0; opacity: 0; visibility: hidden; transition-delay: 0s, 0s, 0s, var(--mae-dur); }
 .app[data-hide-left] .sidebar { margin-right: -10px; } /* swallow the shell gap */
 .app[data-hide-right] .rightpanel { margin-left: -10px; }
+/* drag handle filling the 10px shell gap; its negative margins cancel the extra gap a flex item adds */
+.resizer { flex: none; width: 10px; margin: 0 -10px; cursor: col-resize; position: relative; z-index: 2; touch-action: none; }
+.resizer::after { content: ""; position: absolute; top: 20%; bottom: 20%; left: 4px; width: 2px; border-radius: 1px; background: var(--mae-accent); opacity: 0; transition: opacity var(--mae-dur) var(--mae-ease); }
+.resizer:hover::after, .app[data-resizing] .resizer::after { opacity: .6; }
+.app[data-hide-left] .resizer[data-side="left"], .app[data-hide-right] .resizer[data-side="right"] { display: none; }
+.app[data-resizing] { cursor: col-resize; user-select: none; }
+.app[data-resizing] .sidebar, .app[data-resizing] .rightpanel { transition: none; }
+.app[data-resizing] .stage { pointer-events: none; } /* the canvas/xterm would swallow pointer moves */
+
+/* panel style (settings → 스타일 → 패널 구분): "cards" floats each panel (above), "lines" joins the three
+   into one rounded box split by single lines, "full" does the same edge to edge with no margin */
+:root:is([data-panels="lines"], [data-panels="full"]) .shell { gap: 0; }
+:root:is([data-panels="lines"], [data-panels="full"]) .shell > .sidebar { border-radius: var(--mae-frame-radius) 0 0 var(--mae-frame-radius); }
+:root:is([data-panels="lines"], [data-panels="full"]) .shell > .stage { border-radius: 0; border-left-width: 0; border-right-width: 0; }
+:root:is([data-panels="lines"], [data-panels="full"]) .shell > .rightpanel { border-radius: 0 var(--mae-frame-radius) var(--mae-frame-radius) 0; }
+/* a hidden panel takes its edge with it: the stage closes that side itself */
+:root:is([data-panels="lines"], [data-panels="full"]) .app[data-hide-left] .stage { border-left-width: 1px; border-top-left-radius: var(--mae-frame-radius); border-bottom-left-radius: var(--mae-frame-radius); }
+:root:is([data-panels="lines"], [data-panels="full"]) .app[data-hide-right] .stage { border-right-width: 1px; border-top-right-radius: var(--mae-frame-radius); border-bottom-right-radius: var(--mae-frame-radius); }
+:root:is([data-panels="lines"], [data-panels="full"]) .app:is([data-hide-left], [data-hide-right]) :is(.sidebar, .rightpanel) { margin: 0; } /* no gap to swallow */
+/* the resize handle straddles the line: ±5px around it, taking no room */
+:root:is([data-panels="lines"], [data-panels="full"]) .resizer { margin: 0 -5px; }
+/* full: no window margin, so no outer edge or rounding either; only the line under the top bar and between panels stays */
+:root[data-panels="full"] .shell { padding: 0; }
+:root[data-panels="full"] .shell > :is(.sidebar, .stage, .rightpanel) { border-radius: 0; border-bottom-width: 0; }
+:root[data-panels="full"] .shell > .sidebar, :root[data-panels="full"] .app[data-hide-left] .stage { border-left-width: 0; }
+:root[data-panels="full"] .shell > .rightpanel, :root[data-panels="full"] .app[data-hide-right] .stage { border-right-width: 0; }
+:root[data-panels="full"] .app[data-hide-left] .stage, :root[data-panels="full"] .app[data-hide-right] .stage { border-radius: 0; }
 
 /* view-locked minimap (ViewMap.tsx): faint and small at rest, grows on hover / while held */
 .viewmap { display: block; width: 140px; background: var(--mae-panel); border: 1px solid var(--mae-border); border-radius: 10px; opacity: .45; cursor: crosshair; transition: width var(--mae-dur) var(--mae-ease), opacity var(--mae-dur) var(--mae-ease); }
@@ -242,8 +298,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--m
 .wt-row:hover { background: var(--mae-hover); }
 .wt-row[data-selected] { background: var(--mae-selected); }
 /* the Maestro leads the tree: set apart from the worktrees it orchestrates */
-.wt-row[data-maestro] { margin: 4px 6px 2px; border: 1px solid color-mix(in srgb, var(--mae-accent) 35%, transparent); background: color-mix(in srgb, var(--mae-accent) 8%, transparent); }
-.wt-row[data-maestro][data-selected] { background: color-mix(in srgb, var(--mae-accent) 18%, transparent); }
+/* only the crown and a heavier name: a tinted box read as "selected" */
+.wt-row[data-maestro] .wt-branch { font-weight: 600; }
 .wt-row { position: relative; }
 .wt-elbow { position: absolute; width: 8px; height: 12px; margin-left: -14px; margin-top: -6px; border-left: 1px solid var(--mae-border); border-bottom: 1px solid var(--mae-border); border-bottom-left-radius: 4px; pointer-events: none; }
 .wt-group { padding: 8px 10px 2px 24px; letter-spacing: .02em; }
@@ -278,11 +334,27 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--m
 .code[data-code="M"] { color: var(--mae-warn); }
 .code[data-code="A"], .code[data-code="?"] { color: var(--mae-add); }
 .code[data-code="D"] { color: var(--mae-del); }
-.diff { margin: 6px 0 0; padding: 8px 0; font: 12px/1.5 var(--mae-mono); border-top: 1px solid var(--mae-border); overflow-x: auto; }
-.diff div { padding: 0 10px; white-space: pre; }
-.diff .add { background: color-mix(in srgb, var(--mae-add) 12%, transparent); color: var(--mae-add-text); }
-.diff .del { background: color-mix(in srgb, var(--mae-del) 12%, transparent); color: var(--mae-del-text); }
-.diff .hunk { color: var(--mae-accent); }
+.tree-row[data-selected] { background: var(--mae-selected); }
+.tree-row { align-items: center; }
+.tree-row > :last-child { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.tree-icon { flex: none; color: var(--mae-muted); }
+.tree-icon[data-kind="folder"], .tree-icon[data-kind="open"] { color: var(--mae-accent); }
+
+/* ---------- code editor (CodeView.tsx): Monaco over the stage ---------- */
+/* the theme color over black: in see-through themes (neon) the canvas would otherwise show behind the code */
+.code-view { --cv-bg: linear-gradient(var(--mae-node), var(--mae-node)), #000; position: absolute; inset: 0; z-index: 30; display: flex; flex-direction: column; background: var(--cv-bg); }
+/* Monaco paints its sticky scope lines with the (transparent) editor background, so the code scrolled under them showed through */
+.code-view .monaco-editor .sticky-widget { background: var(--cv-bg) !important; box-shadow: 0 1px 0 var(--mae-border); }
+.code-view.empty { align-items: center; justify-content: center; }
+.cv-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--mae-border); }
+.cv-path { font: 12px var(--mae-mono); min-width: 0; }
+.cv-dirty { color: var(--mae-accent); }
+.cv-banner { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 12px; background: color-mix(in srgb, var(--mae-warn) 14%, transparent); border-bottom: 1px solid var(--mae-border); }
+.cv-banner span { flex: 1; }
+.cv-err { padding: 6px 10px; }
+.cv-body { flex: 1; min-height: 0; }
+/* Markdown preview: the chat's .md styles, laid out as a readable page */
+.cv-md { height: 100%; overflow: auto; box-sizing: border-box; padding: 20px 28px 40px; max-width: 860px; margin: 0 auto; font-size: 14px; line-height: 1.65; user-select: text; }
 
 /* ---------- canvas & nodes ---------- */
 .canvas-tools { display: flex; align-items: center; gap: 6px; background: var(--mae-panel); border: 1px solid var(--mae-border); border-radius: 10px; padding: 5px 6px; white-space: nowrap; box-shadow: var(--mae-shadow); }
@@ -304,6 +376,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--m
 .node { width: 100%; height: 100%; display: flex; flex-direction: column; border-radius: var(--mae-radius); overflow: hidden; background: var(--mae-node); border: 1px solid var(--mae-border); }
 .node header { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 10px; border-bottom: 1px solid var(--mae-border); background: var(--mae-panel-2); }
 .node header button { padding: 1px 8px; font-size: 12px; }
+/* a long name gives way (ellipsis, full text on hover); badges, logos and buttons keep their size */
+.node header > :not(.ellipsis):not(.spacer) { flex: none; white-space: nowrap; }
 
 .node-agent { background: var(--mae-bg); }
 .lod { flex: 1; padding: 16px; font-size: 18px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; overflow: hidden; }
@@ -348,6 +422,9 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--m
 .agent-full { height: 100%; display: flex; flex-direction: column; background: var(--mae-bg); }
 .agent-full > header { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--mae-border); background: var(--mae-panel); }
 .agent-full > header button { padding: 2px 10px; font-size: 12px; }
+.agent-full > header .layout-toggle { order: 1; } /* last in the header: the top-right corner */
+.stage-corner { position: absolute; top: 12px; right: 12px; z-index: 5; background: var(--mae-panel); border: 1px solid var(--mae-border); border-radius: 10px; padding: 3px; box-shadow: var(--mae-shadow); }
+button.layout-toggle, .agent-full > header button.layout-toggle { width: 30px; height: 30px; padding: 0; display: grid; place-items: center; border-radius: 8px; }
 .agent-full .messages, .agent-full .composer, .agent-full .approvals { padding-left: max(16px, calc((100% - 820px) / 2)); padding-right: max(16px, calc((100% - 820px) / 2)); }
 .agent-full .messages { padding-top: 20px; gap: 14px; font-size: 14px; }
 .agent-full .composer { border-top: 0; padding-bottom: 16px; background: none; }
@@ -381,7 +458,29 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--m
 .bash-hint { color: var(--mae-bash); }
 
 .composer { position: relative; border-top: 1px solid var(--mae-border); padding: 8px; display: grid; gap: 6px; background: var(--mae-panel); cursor: auto; }
-.composer[data-over] { box-shadow: inset 0 0 0 2px var(--mae-accent); }
+/* A file is being dragged (RightPanel sets data-dragging): every place that takes it turns into a labeled drop zone,
+   and the one under the pointer fills in. */
+:root[data-dragging~="file"] :is(.composer, .node-prompt)::after {
+  content: "파일 첨부";
+  position: absolute; inset: 6px; z-index: 5; pointer-events: none;
+  display: grid; place-items: center;
+  font-size: 12px; font-weight: 600; letter-spacing: .02em; color: var(--mae-accent);
+  border: 1.5px dashed color-mix(in srgb, var(--mae-accent) 60%, transparent); border-radius: 10px;
+  background: color-mix(in srgb, var(--mae-panel) 82%, var(--mae-accent));
+  animation: drop-in var(--mae-dur) var(--mae-ease);
+}
+:root[data-dragging~="file"] :is(.composer, .node-prompt)[data-over]::after {
+  content: "놓아서 첨부";
+  border-style: solid; border-color: var(--mae-accent);
+  background: color-mix(in srgb, var(--mae-panel) 62%, var(--mae-accent));
+  color: var(--mae-text);
+}
+@keyframes drop-in { from { opacity: 0; transform: scale(.97); } }
+/* the drag image: a chip with the file's icon and name instead of a see-through copy of the row */
+.drag-chip { position: fixed; top: -200px; left: 0; display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; font-size: 12px; white-space: nowrap; color: var(--mae-text); background: var(--mae-panel-2); border: 1px solid var(--mae-accent); border-radius: 999px; }
+.drag-chip svg { color: var(--mae-accent); }
+/* Markdown can also land on a canvas as a block; an overlay, since the canvas would cover an inset shadow */
+:root[data-dragging~="md"] .stage:has(.react-flow)::after { content: ""; position: absolute; inset: 0; z-index: 25; pointer-events: none; border-radius: inherit; box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--mae-accent) 40%, transparent); }
 .composer textarea { resize: none; }
 .composer .chips { padding: 0; }
 .composer-actions { display: flex; align-items: center; gap: 6px; }
@@ -446,7 +545,7 @@ button.link { background: none; border: none; padding: 0; text-align: left; text
 .modal .ref-row { display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr); align-items: center; gap: 8px; padding: 4px 6px; border-radius: 6px; cursor: pointer; color: var(--mae-text); }
 .modal .ref-row:hover { background: var(--mae-hover); }
 .doc-badge { font-size: 11px; padding: 0 7px; border-radius: 999px; border: 1px solid var(--mae-border); color: var(--mae-muted); }
-.struct-foot { margin-top: auto; padding: 4px 10px 8px; }
+.struct-foot { margin-top: auto; padding: 4px 10px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .struct-handle.react-flow__handle { opacity: 0; pointer-events: none; }
 /* only the visible path: a bare `path` here would also shrink the wide invisible click area to 2px */
 .react-flow__edge.orch .react-flow__edge-path { stroke: var(--mae-accent); stroke-width: 2; }
@@ -464,7 +563,7 @@ button.link { background: none; border: none; padding: 0; text-align: left; text
 .seg { display: inline-flex; border: 1px solid var(--mae-border); border-radius: 6px; overflow: hidden; }
 .seg button { border: none; border-radius: 0; padding: 1px 7px; background: none; color: var(--mae-muted); }
 .seg button[data-on] { background: var(--mae-selected); color: var(--mae-text); }
-.node-prompt[data-over] { box-shadow: 0 0 0 2px var(--mae-accent); }
+.node-prompt { position: relative; } /* holds its drop zone */
 .node-prompt textarea { margin: 8px; resize: vertical; }
 .node-prompt footer { display: flex; align-items: center; gap: 8px; padding: 0 8px 8px; }
 .node-prompt footer > span { flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

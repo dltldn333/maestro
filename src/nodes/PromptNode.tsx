@@ -44,7 +44,7 @@ export function PromptNode({ id, data }: NodeProps<PromptFlowNode>) {
         e.preventDefault();
         setOver(true);
       }}
-      onDragLeave={() => setOver(false)}
+      onDragLeave={(e) => !e.currentTarget.contains(e.relatedTarget as Node) && setOver(false)} // not when crossing into a child
       onDrop={(e) => {
         setOver(false);
         const rel = e.dataTransfer.getData(DRAG_MIME);
@@ -52,7 +52,7 @@ export function PromptNode({ id, data }: NodeProps<PromptFlowNode>) {
       }}
     >
       <header>
-        <b>{data.label}</b>
+        <b className="ellipsis" title={data.label}>{data.label}</b>
         <span className="spacer" />
         <span className="muted small">{targets.length > 1 ? `동시 전송 · ${targets.length}` : targets.length ? "단독 전송" : "연결 없음"}</span>
       </header>

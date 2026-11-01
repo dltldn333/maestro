@@ -78,13 +78,9 @@ const normalize = (n: CanvasNode): CanvasNode => {
 
 const folderName = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
-/** A "?" that shows how to use this canvas: pops up for a few seconds on arrival, then on demand. */
+/** A "?" that shows how to use this canvas when clicked. */
 export function Guide({ text }: { text: string }) {
-  const [open, setOpen] = useState(true);
-  useEffect(() => {
-    const t = setTimeout(() => setOpen(false), 6000);
-    return () => clearTimeout(t);
-  }, []);
+  const [open, setOpen] = useState(false);
   return (
     <span className="guide">
       <button className="icon" title="사용법" data-on={open || undefined} onClick={() => setOpen(!open)}>?</button>
@@ -542,7 +538,7 @@ export function Canvas({ root, scope, onNewAgent, onOpenSettings }: {
         }
       }}
       onNodeDragStop={() => setLayoutTick((t) => t + 1)}
-      onNodeDoubleClick={(_, n) => n.type === "worktree_card" && select(n.data.worktreePath)}
+      onNodeDoubleClick={(_, n) => n.type === "worktree_card" && select(n.data.worktreePath, true)}
       zoomOnDoubleClick={false}
       onMoveEnd={() => setViewTick((t) => t + 1)}
       snapToGrid

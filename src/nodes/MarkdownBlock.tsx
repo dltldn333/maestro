@@ -16,7 +16,7 @@ export function MarkdownBlock({ data }: NodeProps<MarkdownNode>) {
       ))}
       <span className="md-block-icon" aria-hidden>MD</span>
       <div className="md-block-text">
-        <b className="ellipsis">{data.title}</b>
+        <b className="ellipsis" title={data.title}>{data.title}</b>
         <span className="muted small ellipsis">{file}</span>
       </div>
     </div>

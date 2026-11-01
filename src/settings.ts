@@ -22,6 +22,13 @@ export const EASINGS = {
   linear: { label: "일정하게", curve: "linear" },
 } as const;
 
+// How the sidebar, stage and right panel sit inside the window frame (ids kept from the first two-option version).
+export const PANEL_STYLES = {
+  cards: { label: "분리", hint: "패널마다 둥글게 띄우고 사이에 틈을 둬요." },
+  lines: { label: "통합", hint: "패널을 둥근 상자 하나로 붙이고 선으로만 나눠요." },
+  full: { label: "와이드", hint: "여백 없이 창 끝까지 채우고 선으로만 나눠요. 가장 넓어요." },
+} as const;
+
 export const SPEEDS = {
   fast: { label: "빠르게", ms: 120 },
   normal: { label: "보통", ms: 220 },
@@ -33,6 +40,7 @@ type Prefs = {
   easing: keyof typeof EASINGS;
   speed: keyof typeof SPEEDS;
   motion: boolean;
+  panelStyle: keyof typeof PANEL_STYLES;
   defaultAgent: string;
   /** permission mode new worktrees start with */
   defaultPermission: string;
@@ -48,10 +56,19 @@ type Prefs = {
   agentLayout: "full" | "canvas";
   /** chat or terminal in the full-screen agent view (canvas blocks keep their own) */
   fullView: AgentView;
+  /** stop idle agents of a project left this many minutes ago (they resume on return); 0 = never */
+  awayMinutes: number;
 };
 
+export const AWAY_CHOICES = [
+  { minutes: 5, label: "5분" },
+  { minutes: 15, label: "15분" },
+  { minutes: 60, label: "1시간" },
+  { minutes: 0, label: "끄지 않음" },
+] as const;
+
 export const useSettings = create<Prefs & { set: (p: Partial<Prefs>) => void }>()(
-  persist((set) => ({ theme: "dark", easing: "smooth", speed: "normal", motion: true, defaultAgent: "auto", defaultPermission: "acceptEdits", disabledAgents: [], agentModels: {}, assistantAgent: "claude-code", assistantModel: "", agentLayout: "full", fullView: "chat", set }), { name: "maestro.settings" }),
+  persist((set) => ({ theme: "dark", easing: "smooth", speed: "normal", motion: true, panelStyle: "cards", defaultAgent: "auto", defaultPermission: "acceptEdits", disabledAgents: [], agentModels: {}, assistantAgent: "claude-code", assistantModel: "", agentLayout: "full", fullView: "chat", awayMinutes: 15, set }), { name: "maestro.settings" }),
 );
 
 /** Motion duration in ms; 0 when the user or the OS turned motion off. */
@@ -63,6 +80,7 @@ function applySettings(s: Prefs) {
   const root = document.documentElement;
   // a theme removed since it was saved (e.g. forest) falls back to the default
   root.dataset.theme = THEMES.some((t) => t.id === s.theme) ? s.theme : "dark";
+  root.dataset.panels = s.panelStyle in PANEL_STYLES ? s.panelStyle : "cards";
   root.style.setProperty("--mae-ease", EASINGS[s.easing].curve);
   root.style.setProperty("--mae-dur", `${motionMs(s)}ms`);
 }

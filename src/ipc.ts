@@ -25,6 +25,13 @@ export const ipc = {
   send: (projectRoot: string, worktreePath: string, text: string, filesAttached: string[] = []) =>
     invoke<void>("send_message", { projectRoot, worktreePath, text, filesAttached }),
   stop: (worktreePath: string) => invoke<void>("stop_agent", { worktreePath }),
+  readTextFile: (base: string, rel: string) => invoke<{ text: string; mtime: number }>("read_text_file", { base, rel }),
+  /** rejects with "CHANGED" when the file moved on since `expected` (unless force) */
+  writeTextFile: (base: string, rel: string, text: string, expected: number, force = false) => invoke<number>("write_text_file", { base, rel, text, expected, force }),
+  fileMtime: (base: string, rel: string) => invoke<number>("file_mtime", { base, rel }),
+  fileAtHead: (base: string, rel: string) => invoke<string>("file_at_head", { base, rel }),
+  /** the project on screen, and after how many minutes away the others' idle agents stop (0 = never) */
+  setAway: (activeRoot: string | null, minutes: number) => invoke<void>("set_away", { activeRoot, minutes }),
   slashCommands: (worktreePath: string) =>
     invoke<Array<{ name: string; description: string; source: string }>>("list_slash_commands", { worktreePath }),
   cliStatus: () => invoke<CliStatus>("cli_status"),
@@ -45,7 +52,6 @@ export const ipc = {
   discardWorktree: (projectRoot: string, worktreePath: string, branch: string) => invoke<void>("discard_worktree", { projectRoot, worktreePath, branch }),
   listDir: (path: string) => invoke<Array<{ name: string; isDir: boolean }>>("list_dir", { path }),
   gitStatus: (worktreePath: string) => invoke<Array<{ code: string; path: string }>>("git_status", { worktreePath }),
-  gitDiff: (worktreePath: string, file: string) => invoke<string>("git_diff_file", { worktreePath, file }),
   loadCanvas: (projectRoot: string, key: string) => invoke<string | null>("load_canvas_state", { projectRoot, key }),
   saveCanvas: (projectRoot: string, key: string, stateJson: string) => invoke<void>("save_canvas_state", { projectRoot, key, stateJson }),
 };

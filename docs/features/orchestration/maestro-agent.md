@@ -1,0 +1,63 @@
+---
+title: 마에스트로 에이전트 (프로젝트 조율자)
+area: orchestration
+status: done
+files:
+  - src-tauri/src/main.rs
+  - src-tauri/src/agent.rs
+  - src-tauri/src/control.rs
+  - src/NewAgentDialog.tsx
+  - src/ProjectMap.tsx
+  - src/Canvas.tsx
+  - src/nodes/AgentNode.tsx
+  - src/nodes/WorktreeCard.tsx
+related:
+  - features/orchestration/worker-hierarchy.md
+  - features/orchestration/maestro-cli.md
+  - features/orchestration/worker-done-notes.md
+  - features/worktrees/branch-selection.md
+  - features/canvas/two-level-canvas.md
+  - architecture/agent-runtime.md
+  - reference/storage-layout.md
+updated: 2026-11-01
+---
+
+# 마에스트로 에이전트 (프로젝트 조율자)
+
+## 요약
+
+마에스트로는 프로젝트마다 하나만 만들 수 있는 조율 에이전트예요. 워크트리가 아니라 프로젝트 폴더 자체(지금 체크아웃된 브랜치)에서 실행되고, 일을 나눠 워커 워크트리에 맡긴 뒤 결과를 기준 브랜치(`base_branch`)에 합치는 역할을 해요. 설정은 `~/.maestro/projects/<이름>_<해시>/agents/maestro.json`에 `role: "maestro"`로 저장돼요.
+
+## 동작
+
+- 프로젝트 캔버스(`ProjectMap.tsx`) 위쪽 도구 막대에 마에스트로가 없으면 `♛ 마에스트로 만들기`, 있으면 `♛ 마에스트로 캔버스` 버튼이 보여요.
+- 만들기 대화상자(`NewAgentDialog`의 `maestro` 모드)에서는 이름·설명 입력이 없어요. 에이전트, 권한, 그리고 `워커 기준 브랜치`만 골라요. 원본 폴더에서 직접 실행되니 권한을 신중히 고르라는 안내가 나와요.
+- 만들면 바로 실행돼요. 이름은 항상 `Maestro`예요.
+- 사이드바와 카드에는 `♛`(`maestro-crown`) 표시가 붙고, 사이드바 트리와 캔버스 트리에서 항상 맨 위에 와요.
+- 프로젝트 캔버스 카드 아래쪽에는 브랜치 대신 `기준 <base_branch>`가 보여요. 기준 브랜치가 없으면 저장소 기본 브랜치를 보여 줘요.
+- 마에스트로의 캔버스(`Canvas.tsx`에서 `hub`)에서는 마에스트로가 전체 에이전트 블록으로, 다른 워크트리는 요약 카드로 보여요.
+- 폐기(휴지통)하면 "프로젝트 폴더와 브랜치는 그대로 두고, 에이전트와 워커 연결만 지워요"라고 확인한 뒤 설정 파일만 지워요.
+
+## 구현
+
+- 명령: `create_maestro` (`main.rs`). 요청 `CreateMaestroReq { project_root, adapter_id, permission_mode, model, base_branch }`.
+  - `files(app, root, root)`로 메타 파일 위치를 정해요. `is_root(project_root, path)`가 참이면 `<project_dir>/agents/maestro.json`을 써요.
+  - 이미 메타가 있으면 `"이 프로젝트에는 이미 마에스트로가 있어요"` 오류예요.
+  - `AgentMeta { name: "Maestro", role: "maestro", base_branch, model, ... }`를 쓰고 `ensure()`로 바로 실행해요. `model`과 `base_branch`는 빈 문자열이면 `None`이에요.
+- 목록: `worktree_infos()`는 `maestro.json`이 있으면 프로젝트 폴더를 첫 항목으로 넣어요. 브랜치는 `worktree::current_branch(root)`예요. `WorktreeInfo.is_maestro`는 `meta.role == "maestro"`일 때 참이에요.
+- 기준 브랜치: `base_branch(app, root)`는 마에스트로 메타의 `base_branch`, 없으면 `worktree::default_branch(root)`(origin 기본 브랜치 → 현재 브랜치 → `HEAD`)를 돌려줘요. 새 워크트리 대화상자의 기본 기준값과 `maestro worktree create`의 기본 `--base`가 이 값을 써요.
+- 시스템 브리프: `agent::system_brief()`는 `role == "maestro"`이면 `MAESTRO_HINT` 뒤에 `COORDINATOR_HINT`를 붙여요. 내용은 "프로젝트 폴더에서 돌고, 구현은 워커에게 맡기고, `maestro read`로 확인하고, 브랜치를 여기서 리뷰·병합하라, 사용자가 요청하지 않으면 직접 코드를 고치지 말라"예요. `base_branch`가 있으면 "새 워커는 여기서 갈라지고 끝난 작업은 여기에만 합쳐라"는 문장도 붙어요. Claude Code와 Antigravity 둘 다 받아요(Antigravity는 `--add-dir` 규칙 폴더로).
+- 계층: `link()`는 `is_root(root, child)`면 `"마에스트로는 다른 블록의 워커가 될 수 없어요"`로 거부해요. 캔버스의 `linkFor()`도 대상이 `isMaestro`면 선을 만들지 않아요.
+- 폐기: `discard_worktree`는 `is_root`이면 프로세스를 끄고 `forget_agent`로 `maestro.json`과 그 옆 파일(`.settings.json`, `.brief.md`, `.brief/`)을 지워요. 폴더와 브랜치는 건드리지 않아요.
+- CLI: `maestro worktree list`는 마에스트로 항목에 `role: "maestro"`를 넣어요.
+
+## 제약과 알려진 문제
+
+- 프로젝트당 마에스트로는 하나예요.
+- 마에스트로는 원본 프로젝트 폴더에서 실행되므로 권한 모드에 따라 원본 파일을 바로 바꿀 수 있어요.
+- 기준 브랜치를 만든 뒤 바꾸는 명령은 현재 코드에 없어요. 커밋 0f01eac 메시지에는 "카드에서 바꿀 수 있다"고 적혀 있지만 지금 소스에서는 찾지 못했어요(확인 안 됨).
+
+## 결정 기록
+
+- 마에스트로를 워크트리가 아닌 프로젝트 폴더에 둔 이유: 워커 브랜치를 기준 브랜치에 병합하는 자리가 필요해서예요(`COORDINATOR_HINT`, `AgentMeta.role` 주석).
+- 마에스트로 폐기는 폴더와 브랜치를 남겨요. 원본 저장소를 지우면 안 되기 때문이에요.

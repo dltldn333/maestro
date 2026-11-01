@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { AGENTS, AgentLogo, PERMISSIONS, agentLabel, agentUsable } from "./NewAgentDialog";
 import { MODEL_CHOICES } from "./slashCommands";
-import { EASINGS, SPEEDS, THEMES, useSettings } from "./settings";
+import { AWAY_CHOICES, EASINGS, PANEL_STYLES, SPEEDS, THEMES, useSettings } from "./settings";
 import { ipc } from "./ipc";
 import { listen } from "@tauri-apps/api/event";
 import { XTerm } from "./nodes/XTerm";
@@ -18,6 +18,7 @@ export const GearIcon = () => (
 
 const SECTIONS = [
   { id: "agents", label: "에이전트", desc: "쓸 에이전트를 켜고 끄고, 새 워크트리에 쓸 기본 에이전트와 모델을 정해요." },
+  { id: "run", label: "실행", desc: "에이전트 CLI를 언제 켜 두고 언제 끌지 정해요." },
   { id: "style", label: "스타일", desc: "테마와 화면 움직임의 느낌을 정해요." },
 ] as const;
 
@@ -269,6 +270,21 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                 {[...installedAgents, ...availableAgents].map((a) => <AgentTile key={a.id} id={a.id} label={a.label} soon={a.disabled} />)}
               </div>
             </>
+          ) : sec === "run" ? (
+            <>
+              <h4>자리 비움</h4>
+              <section className="set-card">
+                <div className="set-row">
+                  <div>
+                    <div>자리 비운 프로젝트 정리</div>
+                    <div className="muted small">다른 프로젝트로 옮긴 뒤 이만큼 지나면 쉬고 있는 에이전트를 꺼요. 작업 중, 승인 대기, 백그라운드 셸이 도는 에이전트는 남겨요. 돌아오면 대화를 이어서 다시 켜요.</div>
+                  </div>
+                  <select value={s.awayMinutes} onChange={(e) => s.set({ awayMinutes: Number(e.target.value) })}>
+                    {AWAY_CHOICES.map((c) => <option key={c.minutes} value={c.minutes}>{c.label}</option>)}
+                  </select>
+                </div>
+              </section>
+            </>
           ) : (
             <>
               <h4>테마</h4>
@@ -280,6 +296,18 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                   </button>
                 ))}
               </div>
+
+              <h4>패널 구분</h4>
+              <section className="set-card">
+                <div className="set-row">
+                  <div className="muted small">{PANEL_STYLES[s.panelStyle]?.hint}</div>
+                  <div className="seg">
+                    {Object.entries(PANEL_STYLES).map(([id, p]) => (
+                      <button key={id} data-on={id === s.panelStyle || undefined} onClick={() => s.set({ panelStyle: id as keyof typeof PANEL_STYLES })}>{p.label}</button>
+                    ))}
+                  </div>
+                </div>
+              </section>
 
               <h4>모션</h4>
               <section className="set-card">

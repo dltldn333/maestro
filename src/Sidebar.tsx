@@ -4,7 +4,8 @@ import { AgentLogo } from "./NewAgentDialog";
 import { useApprovals, useStore, type Worktree } from "./store";
 import type { Repo } from "./types";
 
-const STATUS_LABEL: Record<string, string> = { RUNNING: "작업 중", IDLE: "대기", TERMINATED: "꺼짐" };
+// idle and off (often just stopped while away, it resumes when opened) need no words: the dot says enough
+const STATUS_LABEL: Record<string, string> = { RUNNING: "작업 중" };
 
 export function StatusDot({ w }: { w: Worktree }) {
   const waiting = useApprovals(w.path).length > 0;
@@ -97,10 +98,12 @@ export function Sidebar({ onNewWorktree, onOpenSettings }: { onNewWorktree: (rep
                     data-selected={w.path === selectedPath || undefined}
                     style={{ paddingLeft: 22 + depth * 16 }}
                     title={w.path}
+                    // a click previews the worktree in the reusable tab, a double click keeps its tab (VS Code)
                     onClick={() => {
                       if (r.root !== activeRoot) setActive(r.root);
                       select(w.path);
                     }}
+                    onDoubleClick={() => select(w.path, true)}
                   >
                     {depth > 0 && <span className="wt-elbow" aria-hidden />}
                     <StatusDot w={w} />

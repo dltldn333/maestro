@@ -33,13 +33,11 @@ export const clampAgentSize = (width: number, height: number) => ({
 
 /**
  * An agent block on an agent canvas: the agent panel, resized by dragging its bottom-right corner, with
- * link points on every side (workers, references) and an input on the left for prompt blocks.
+ * link points on every side (workers, references, prompt blocks; the canvas connects in loose mode).
  */
 export function AgentNode({ id, data }: NodeProps<TerminalFlowNode>) {
   const lod = useFlowStore((s) => s.transform[2] < LOD_ZOOM);
   const { updateNode } = useReactFlow();
-  const isMaestro = useWorktree(data.worktreePath)?.isMaestro;
-  const setSettings = useSettings((s) => s.set);
   return (
     <>
       {/* outside the panel so they sit on the block's edges, not its header */}
@@ -53,13 +51,6 @@ export function AgentNode({ id, data }: NodeProps<TerminalFlowNode>) {
         view={data.view ?? "chat"}
         onView={(v) => updateNode(id, { data: { ...data, view: v } })}
         lod={lod}
-        extra={
-          <>
-            <Handle type="target" position={Position.Left} />
-            {/* the Maestro lives on its canvas; a worktree can fill the stage */}
-            {!isMaestro && <button title="전체 화면으로" onClick={() => setSettings({ agentLayout: "full" })}>전체 화면</button>}
-          </>
-        }
       />
     </>
   );
@@ -105,7 +96,7 @@ export function AgentPanel({ path, view, onView, lod = false, lead, extra, class
       <header>
         {lead}
         <StatusDot w={wt} />
-        <b className="ellipsis" title={`브랜치 ${wt.branch}`}>{wt.name}</b>
+        <b className="ellipsis" title={`${wt.name}\n브랜치 ${wt.branch}`}>{wt.name}</b>
         <span className="agent-tag muted small"><AgentLogo id={wt.adapterId} size={14} />{agentLabel(wt.adapterId)}</span>
         <span className="spacer" />
         <span className="seg" title="보기 방식">
@@ -349,10 +340,10 @@ const MD_COMPONENTS: Components = {
   a: ({ href, children }) => <span className="md-link" title={href}>{children}</span>,
 };
 
-/** Agent replies are Markdown (GitHub flavor: tables, task lists, strikethrough). */
-function RichText({ text }: { text: string }) {
+/** Agent replies are Markdown (GitHub flavor: tables, task lists, strikethrough). The editor's preview uses it too. */
+export function RichText({ text, className = "msg-text" }: { text: string; className?: string }) {
   return (
-    <div className="msg-text md">
+    <div className={`${className} md`}>
       <Markdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{text}</Markdown>
     </div>
   );
@@ -397,6 +388,7 @@ function Composer({ root, path, running }: { root: string; path: string; running
     if (claude && t.trim() === "/model") return setText("/model "); // open the model list instead of the TUI picker
     try {
       await ipc.send(root, path, t, files);
+      useStore.getState().pinTab({ kind: "wt", path }); // worked in, so its tab stays (no longer a preview)
       setText("");
       setFiles([]);
     } catch (e) {
@@ -414,7 +406,7 @@ function Composer({ root, path, running }: { root: string; path: string; running
         e.preventDefault();
         setOver(true);
       }}
-      onDragLeave={() => setOver(false)}
+      onDragLeave={(e) => !e.currentTarget.contains(e.relatedTarget as Node) && setOver(false)} // not when crossing into a child
       onDrop={(e) => {
         setOver(false);
         const rel = e.dataTransfer.getData(DRAG_MIME);

@@ -445,9 +445,9 @@ give each to a worker (`maestro worktree create --name … --prompt …` makes a
 follow up with `maestro read --to …` (when a worker finishes a turn, Maestro also pastes a `[maestro] 워커 … 완료` note with its answer into your prompt), then review and merge their branches here. Don't edit code yourself unless the user asks.";
 
 /// Claude Code's command line (Antigravity's is in antigravity.rs).
-/// Everything Maestro tells a Claude agent up front: the `maestro` CLI, the coordinator role, its persona
-/// and reference documents. Goes in a file (`--append-system-prompt-file`): a multi-line argument would be
-/// cut at the first newline by `cmd.exe /c`.
+/// Everything Maestro tells an agent up front: the `maestro` CLI, the coordinator role, its persona and
+/// reference documents. Goes in a file: Claude's `--append-system-prompt-file` (a multi-line argument would be
+/// cut at the first newline by `cmd.exe /c`), Antigravity's rules folder (`AGENTS.md`).
 pub fn system_brief(home: &Path, meta: &AgentMeta) -> String {
     let mut out = String::from(MAESTRO_HINT);
     if meta.role.as_deref() == Some("maestro") {
@@ -487,6 +487,53 @@ fn argv(meta: &AgentMeta, session_id: &str, resume: bool, settings: &Path, brief
     Ok(a)
 }
 
+/// (pid, parent pid, executable name) of every process; None when the list can't be read.
+pub fn processes() -> Option<Vec<(u32, u32, String)>> {
+    #[cfg(windows)]
+    let out = {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", "Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, $_.Name }"])
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .output()
+            .ok()?
+    };
+    #[cfg(not(windows))]
+    let out = std::process::Command::new("ps").args(["-A", "-o", "pid=,ppid=,comm="]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let list: Vec<_> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            let mut it = l.split_whitespace();
+            Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?, it.collect::<Vec<_>>().join(" ")))
+        })
+        .collect();
+    (!list.is_empty()).then_some(list)
+}
+
+/// Shells the agents' tools run in. MCP servers (node, python, cmd wrappers) also live under the CLI, so only these count.
+const SHELLS: [&str; 6] = ["bash.exe", "sh.exe", "powershell.exe", "pwsh.exe", "bash", "sh"];
+
+/// Any shell among the descendants of `root` (not `root` itself).
+fn shell_below(procs: &[(u32, u32, String)], root: u32) -> bool {
+    let mut stack = vec![root];
+    let mut seen = std::collections::HashSet::from([root]);
+    while let Some(p) = stack.pop() {
+        for (pid, ppid, name) in procs {
+            if *ppid == p && seen.insert(*pid) {
+                let exe = name.rsplit(['/', '\\']).next().unwrap_or(name).to_ascii_lowercase();
+                if SHELLS.contains(&exe.as_str()) {
+                    return true;
+                }
+                stack.push(*pid);
+            }
+        }
+    }
+    false
+}
+
 pub struct Agent {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
@@ -510,7 +557,11 @@ impl Agent {
                 }
             }
             let id = meta.cli_session_id.clone();
-            (antigravity::argv(&meta.permission_mode, id.as_deref(), meta.model.as_deref()), id.map(|id| antigravity::transcript(home, &id)))
+            // the same brief Claude gets, as rules agy reads from a folder outside the worktree (nothing to commit by mistake)
+            let rules = files.meta.with_extension("brief");
+            std::fs::create_dir_all(&rules).map_err(|e| e.to_string())?;
+            std::fs::write(rules.join("AGENTS.md"), system_brief(home, &meta)).map_err(|e| e.to_string())?;
+            (antigravity::argv(&meta.permission_mode, id.as_deref(), meta.model.as_deref(), &rules), id.map(|id| antigravity::transcript(home, &id)))
         } else {
             let session_id = match &meta.cli_session_id {
                 Some(id) => id.clone(),
@@ -532,6 +583,8 @@ impl Agent {
             (argv(&meta, &session_id, session.exists(), &settings, &brief)?, Some(session))
         };
         let agent = Agent::run(app.clone(), worktree_path, &argv, Path::new(worktree_path), &maestro_env(home, worktree_path, approvals))?;
+        // a restart (after an exit or an away stop) would otherwise still read "off" until its first turn
+        let _ = app.emit("agent://state", AgentStateEvent { worktree_path: worktree_path.into(), state: AgentState::Idle });
 
         // Session-file tail → chat events + busy/idle. Primed first so only new lines are emitted live.
         let (a, p, st, home, meta_file) = (app.clone(), agent.worktree_path.clone(), agent.state.clone(), home.to_path_buf(), files.meta.clone());
@@ -738,6 +791,16 @@ impl Agent {
         (B64.encode(&s.buf), s.total)
     }
 
+    /// Time since the TUI last drew anything (zero while waiting for a redraw).
+    pub fn quiet_for(&self) -> Duration {
+        self.scrollback.lock().unwrap().last.map_or(Duration::ZERO, |t| t.elapsed())
+    }
+
+    /// A shell is running somewhere under the CLI: a Bash tool call, likely a background one, still going.
+    pub fn runs_shell(&self, procs: &[(u32, u32, String)]) -> bool {
+        self.child.lock().unwrap().process_id().is_some_and(|pid| shell_below(procs, pid))
+    }
+
     /// Kills the whole process tree (cmd.exe → node → tools on Windows).
     pub fn kill(&self) {
         let mut child = self.child.lock().unwrap();
@@ -885,6 +948,25 @@ mod tests {
         later.push(json!({"type": "local_command", "text": "Set model"}));
         later.push(json!({"type": "user_input", "text": "다음 작업"}));
         assert_eq!(recent_turn_text(&later, 1000), t);
+    }
+
+    #[test]
+    fn finds_shells_below_the_cli_only() {
+        let p = |pid, ppid, n: &str| (pid, ppid, n.to_string());
+        // cmd (root) → node → { mcp node, bash }; an unrelated bash elsewhere
+        let procs = vec![p(10, 1, "cmd.exe"), p(11, 10, "node.exe"), p(12, 11, "node.exe"), p(13, 11, "bash.exe"), p(20, 1, "bash.exe")];
+        assert!(shell_below(&procs, 10));
+        assert!(!shell_below(&procs[..3], 10));
+        assert!(!shell_below(&procs, 12));
+        // a cycle in stale pid data must not loop forever
+        assert!(!shell_below(&[p(1, 2, "node"), p(2, 1, "node")], 1));
+    }
+
+    #[test]
+    #[ignore = "reads the live process list"]
+    fn lists_processes_live() {
+        let procs = processes().expect("process list");
+        assert!(procs.iter().any(|(pid, _, _)| *pid == std::process::id()));
     }
 
     #[test]

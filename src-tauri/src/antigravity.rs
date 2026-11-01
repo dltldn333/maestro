@@ -32,9 +32,10 @@ fn lookup(map: &Value, cwd: &str) -> Option<String> {
     map.as_object()?.iter().find(|(k, _)| k.replace('\\', "/").to_lowercase() == want).and_then(|(_, v)| v.as_str().map(String::from))
 }
 
-/// Maestro's permission choices → agy's flags.
-pub fn argv(permission_mode: &str, conversation: Option<&str>, model: Option<&str>) -> Vec<String> {
-    let mut a = vec!["agy".to_string()];
+/// Maestro's permission choices → agy's flags. `rules`: a folder holding Maestro's brief as `AGENTS.md`;
+/// agy has no system-prompt flag but loads the rules of every workspace folder, `--add-dir` ones included.
+pub fn argv(permission_mode: &str, conversation: Option<&str>, model: Option<&str>, rules: &Path) -> Vec<String> {
+    let mut a = vec!["agy".to_string(), "--add-dir".into(), rules.to_string_lossy().into()];
     match permission_mode {
         "bypassPermissions" => a.push("--dangerously-skip-permissions".into()),
         "plan" => a.extend(["--mode".into(), "plan".into()]),
@@ -152,8 +153,9 @@ mod tests {
 
     #[test]
     fn maps_permission_modes() {
-        assert_eq!(argv("acceptEdits", None, None), ["agy", "--mode", "accept-edits"]);
-        assert_eq!(argv("bypassPermissions", Some("c1"), Some("m")), ["agy", "--dangerously-skip-permissions", "--conversation", "c1", "--model", "m"]);
+        let r = Path::new("R");
+        assert_eq!(argv("acceptEdits", None, None, r), ["agy", "--add-dir", "R", "--mode", "accept-edits"]);
+        assert_eq!(argv("bypassPermissions", Some("c1"), Some("m"), r), ["agy", "--add-dir", "R", "--dangerously-skip-permissions", "--conversation", "c1", "--model", "m"]);
     }
 
     #[test]

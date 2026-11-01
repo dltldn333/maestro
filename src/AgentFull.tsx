@@ -1,14 +1,26 @@
 import { AgentPanel } from "./nodes/AgentNode";
 import { useSettings } from "./settings";
 
-/** Full screen ↔ canvas, inside a worktree. */
+/** Full screen ↔ canvas, inside a worktree: one icon button showing where a click takes you. */
 export function LayoutToggle() {
   const { agentLayout, set } = useSettings();
+  const full = agentLayout === "full";
+  const label = full ? "캔버스로 보기" : "전체 화면으로 보기";
   return (
-    <span className="seg layout-toggle" title="보기 방식">
-      <button data-on={agentLayout === "full" || undefined} onClick={() => set({ agentLayout: "full" })}>전체 화면</button>
-      <button data-on={agentLayout === "canvas" || undefined} onClick={() => set({ agentLayout: "canvas" })}>캔버스</button>
-    </span>
+    <button className="icon layout-toggle" aria-pressed={full} title={label} aria-label={label} onClick={() => set({ agentLayout: full ? "canvas" : "full" })}>
+      {/* Lucide "workflow" / "maximize-2" (ISC) */}
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+        {full ? (
+          <>
+            <rect x="3" y="3" width="8" height="8" rx="2" />
+            <path d="M7 11v4a2 2 0 0 0 2 2h4" />
+            <rect x="13" y="13" width="8" height="8" rx="2" />
+          </>
+        ) : (
+          <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+        )}
+      </svg>
+    </button>
   );
 }
 

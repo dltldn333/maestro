@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Canvas } from "./Canvas";
@@ -6,10 +6,12 @@ import { ProjectMap } from "./ProjectMap";
 import { NewAgentDialog } from "./NewAgentDialog";
 import { RightPanel } from "./RightPanel";
 import { SettingsDialog } from "./SettingsDialog";
-import { AgentFull } from "./AgentFull";
+import { AgentFull, LayoutToggle } from "./AgentFull";
 import { useSettings } from "./settings";
 import { Sidebar } from "./Sidebar";
-import { useStore } from "./store";
+import { activeTab, fileKey, useStore, type StageTab } from "./store";
+import { StageTabs } from "./StageTabs";
+import { useShallow } from "zustand/react/shallow";
 import { ipc } from "./ipc";
 import type { AgentStatePayload, Approval, Repo } from "./types";
 
@@ -30,6 +32,57 @@ function usePanelPref(key: string) {
   };
   return [on, set] as const;
 }
+
+// Per-viewer side panel width (px), clamped; same storage caveats as above.
+function usePanelWidth(key: string, def: number, min: number, max: number) {
+  const clamp = (v: number) => Math.round(Math.min(max, Math.max(min, v)));
+  const [w, setW] = useState(() => {
+    try {
+      const v = Number(localStorage.getItem(key));
+      return v ? clamp(v) : def;
+    } catch {
+      return def;
+    }
+  });
+  const set = (v: number) => {
+    setW(clamp(v));
+    try {
+      localStorage.setItem(key, String(clamp(v)));
+    } catch {}
+  };
+  return [w, set, def] as const;
+}
+
+/** Drag handle between a side panel and the stage; double-click restores the default width. */
+function Resizer({ side, width, set, def, onDrag }: { side: "left" | "right"; width: number; set: (v: number) => void; def: number; onDrag: (on: boolean) => void }) {
+  const dir = side === "left" ? 1 : -1;
+  return (
+    <div
+      className="resizer"
+      data-side={side}
+      role="separator"
+      aria-orientation="vertical"
+      aria-valuenow={width}
+      title="드래그해서 너비 조절 · 더블클릭하면 기본값"
+      onDoubleClick={() => set(def)}
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        const el = e.currentTarget;
+        const x0 = e.clientX;
+        el.setPointerCapture(e.pointerId);
+        onDrag(true);
+        el.onpointermove = (m) => set(width + dir * (m.clientX - x0));
+        el.onpointerup = el.onpointercancel = () => {
+          el.onpointermove = el.onpointerup = el.onpointercancel = null;
+          onDrag(false);
+        };
+      }}
+    />
+  );
+}
+
+// Monaco is several MB: loaded on the first file opened, not at startup
+const CodeView = lazy(() => import("./CodeView"));
 
 const win = getCurrentWindow();
 
@@ -52,11 +105,17 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showLeft, setShowLeft] = usePanelPref("maestro.showLeft");
   const [showRight, setShowRight] = usePanelPref("maestro.showRight");
+  const [leftW, setLeftW, leftDef] = usePanelWidth("maestro.leftWidth", 260, 180, 480);
+  const [rightW, setRightW, rightDef] = usePanelWidth("maestro.rightWidth", 300, 220, 560);
+  const [resizing, setResizing] = useState(false);
   const activeRepo = repos.find((r) => r.root === activeRoot);
-  // nothing selected → the project map; the Maestro → its canvas; a worktree → its full view or canvas
+  // nothing selected → the project map; an agent (the Maestro too) → its full view or its canvas
   const agentLayout = useSettings((s) => s.agentLayout);
+  const awayMinutes = useSettings((s) => s.awayMinutes);
+  useEffect(() => void ipc.setAway(activeRoot, awayMinutes).catch(() => {}), [activeRoot, awayMinutes]);
   const scope = useStore((s) => s.worktrees.find((w) => w.path === s.selectedPath && w.root === activeRoot)?.path);
-  const atMaestro = useStore((s) => s.worktrees.some((w) => w.path === scope && w.isMaestro));
+  const editor = useStore((s) => s.editor);
+  const fileTabs = useStore(useShallow((s) => Object.values(s.tabs).flat().filter((t): t is Extract<StageTab, { kind: "file" }> => t.kind === "file")));
   // until the repos and this project's worktrees are read, "add a repo" or an empty map would be wrong
   const loading = useStore((s) => !s.ready || (!!s.activeRoot && !s.scanned.includes(s.activeRoot)));
   // the sidebar's settings button is out of reach while it's hidden → show one by the zoom bar
@@ -79,7 +138,13 @@ export default function App() {
   }, []);
 
   return (
-    <div className="app" data-hide-left={!showLeft || undefined} data-hide-right={!showRight || undefined}>
+    <div
+      className="app"
+      data-hide-left={!showLeft || undefined}
+      data-hide-right={!showRight || undefined}
+      data-resizing={resizing || undefined}
+      style={{ "--mae-sidebar-w": `${leftW}px`, "--mae-right-w": `${rightW}px` } as React.CSSProperties}
+    >
       {/* replaces the native title bar (decorations: false); drag regions don't inherit, so tag the blank parts too */}
       <header className="topbar" data-tauri-drag-region>
         <span className="brand" data-tauri-drag-region>
@@ -110,12 +175,23 @@ export default function App() {
       </header>
       <div className="shell">
         <Sidebar onNewWorktree={setDialogRepo} onOpenSettings={() => setSettingsOpen(true)} />
+        <Resizer side="left" width={leftW} set={setLeftW} def={leftDef} onDrag={setResizing} />
         <main className="stage">
+          {!loading && <StageTabs />}
+          {/* a double click anywhere in what a preview tab shows keeps that tab (like double-clicking the tab) */}
+          <div
+            className="stage-body"
+            onDoubleClick={() => {
+              const s = useStore.getState();
+              const t = activeTab(s);
+              if (t) s.pinTab(t);
+            }}
+          >
           {loading ? (
             <div className="empty">
               <p className="muted"><span className="spinner" /> 저장소와 워크트리를 읽는 중…</p>
             </div>
-          ) : activeRoot && scope && !atMaestro && agentLayout === "full" ? (
+          ) : activeRoot && scope && agentLayout === "full" ? (
             <AgentFull key={scope} path={scope} />
           ) : activeRoot && scope ? (
             <Canvas
@@ -139,7 +215,24 @@ export default function App() {
               <p className="muted">에이전트마다 ~/.maestro/projects/ 아래에 격리된 워크트리가 만들어지고, 원본 폴더에는 파일이 생기지 않아요.</p>
             </div>
           )}
+          {/* full view has it in its header; on an agent canvas it sits in the corner */}
+          {!loading && scope && agentLayout === "canvas" && (
+            <div className="stage-corner">
+              <LayoutToggle />
+            </div>
+          )}
+          {/* over the stage, so the canvas or agent underneath keeps running and keeps its state;
+              every open file stays mounted (hidden when not on screen) so its unsaved edits survive tab switches */}
+          {fileTabs.length > 0 && (
+            <Suspense fallback={editor && <div className="code-view empty"><p className="muted"><span className="spinner" /> 편집기 불러오는 중…</p></div>}>
+              {fileTabs.map((t) => (
+                <CodeView key={fileKey(t.base, t.rel)} base={t.base} rel={t.rel} diff={t.diff} active={!!editor && editor.base === t.base && editor.rel === t.rel} />
+              ))}
+            </Suspense>
+          )}
+          </div>
         </main>
+        <Resizer side="right" width={rightW} set={setRightW} def={rightDef} onDrag={setResizing} />
         <RightPanel />
       </div>
       {dialog && <NewAgentDialog {...dialog} onClose={() => setDialog(null)} />}

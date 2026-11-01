@@ -23,6 +23,17 @@ use tauri::{AppHandle, Manager, State};
 #[derive(Default)]
 pub(crate) struct AppState {
     pub(crate) agents: Mutex<HashMap<String, Arc<Agent>>>,
+    /// lowercased worktree path → lowercased project root, for agents (setup terminals have none)
+    roots: Mutex<HashMap<String, String>>,
+    away: Mutex<Away>,
+}
+
+/// Which project is on screen, when each other one was left, and after how long its idle agents stop.
+#[derive(Default)]
+struct Away {
+    active: Option<String>,
+    minutes: u64,
+    left: HashMap<String, std::time::Instant>,
 }
 
 impl AppState {
@@ -62,7 +73,56 @@ pub(crate) fn ensure(app: &AppHandle, state: &AppState, project_root: &str, work
     let meta = f.read_meta().ok_or("이 워크트리에는 에이전트 설정이 없습니다")?;
     let a = Arc::new(Agent::spawn(app.clone(), &home(app)?, worktree_path, &f, meta, &app.state::<Approvals>())?);
     state.agents.lock().unwrap().insert(worktree_path.to_lowercase(), a.clone());
+    state.roots.lock().unwrap().insert(worktree_path.to_lowercase(), project_root.to_lowercase());
     Ok((a, true))
+}
+
+/// Stops the idle agents of projects left at least `minutes` ago. Running ones, ones waiting on an approval
+/// and ones with a shell still going (a background Bash) stay. They resume (`--resume`) when next needed.
+fn reap_away(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let (active, limit, left) = {
+        let a = state.away.lock().unwrap();
+        if a.minutes == 0 {
+            return;
+        }
+        (a.active.clone(), Duration::from_secs(a.minutes * 60), a.left.clone())
+    };
+    let waiting: Vec<String> = app.state::<Approvals>().pending().iter().map(|p| p.worktree_path.to_lowercase()).collect();
+    let roots = state.roots.lock().unwrap().clone();
+    let due: Vec<Arc<Agent>> = state.agents.lock().unwrap().iter()
+        .filter(|(k, a)| {
+            let Some(root) = roots.get(*k) else { return false };
+            // a project never opened this run counts as left at launch
+            Some(root) != active.as_ref()
+                && left.get(root).is_none_or(|t| t.elapsed() >= limit)
+                && *a.state.lock().unwrap() == AgentState::Idle
+                && a.quiet_for() >= limit
+                && !waiting.contains(k)
+        })
+        .map(|(_, a)| a.clone())
+        .collect();
+    if due.is_empty() {
+        return;
+    }
+    // can't see the process tree → can't rule out a background shell, so keep them all
+    let Some(procs) = agent::processes() else { return };
+    for a in due.iter().filter(|a| !a.runs_shell(&procs)) {
+        a.kill();
+    }
+}
+
+#[tauri::command]
+fn set_away(state: State<AppState>, active_root: Option<String>, minutes: u64) {
+    let mut a = state.away.lock().unwrap();
+    let active = active_root.map(|r| r.to_lowercase());
+    if a.active != active {
+        if let Some(prev) = a.active.take() {
+            a.left.insert(prev, std::time::Instant::now());
+        }
+        a.active = active;
+    }
+    a.minutes = minutes;
 }
 
 // ---------- repos (~/.maestro/repos.json) ----------
@@ -112,11 +172,23 @@ async fn list_repos(app: AppHandle) -> Result<Vec<RepoInfo>, String> {
 async fn add_repo(app: AppHandle, path: String) -> Result<RepoInfo, String> {
     let root = worktree::toplevel(&path)?;
     let mut roots = read_repos(&app)?;
-    if !roots.contains(&root) {
-        roots.push(root.clone());
-        atomic_write(&repos_file(&app)?, &serde_json::to_string_pretty(&roots).unwrap())?;
-    }
+    // the same repo spelled differently (c: vs C:, \ vs /) keeps its first spelling: the project folder is named by it
+    let root = match roots.iter().find(|r| same_root(r, &root)) {
+        Some(known) => known.clone(),
+        None => {
+            roots.push(root.clone());
+            atomic_write(&repos_file(&app)?, &serde_json::to_string_pretty(&roots).unwrap())?;
+            root
+        }
+    };
     Ok(repo_info(&root))
+}
+
+/// Two spellings of one repo root: slashes either way, and case ignored where the file system ignores it.
+fn same_root(a: &str, b: &str) -> bool {
+    let (a, b) = (a.replace('\\', "/"), b.replace('\\', "/"));
+    let (a, b) = (a.trim_end_matches('/'), b.trim_end_matches('/'));
+    if cfg!(any(windows, target_os = "macos")) { a.eq_ignore_ascii_case(b) } else { a == b }
 }
 
 /// Forgets the repo in the sidebar; worktrees on disk are left alone.
@@ -318,6 +390,28 @@ fn relink(tree: &[(String, Vec<String>)], parent: &str, child: &str) -> Result<V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repo_root_spellings_match() {
+        assert!(same_root("C:/dev/app", "C:/dev/app/"));
+        assert!(same_root("C:\\dev\\app", "C:/dev/app"));
+        assert!(!same_root("C:/dev/app", "C:/dev/app2"));
+        #[cfg(windows)]
+        assert!(same_root("c:/Dev/App", "C:/dev/app"));
+    }
+
+    #[test]
+    fn editor_paths_stay_inside_the_worktree() {
+        let base = std::env::temp_dir().join(format!("maestro-inside-{}", std::process::id()));
+        std::fs::create_dir_all(base.join("src")).unwrap();
+        std::fs::write(base.join("src/a.ts"), "x").unwrap();
+        let b = base.to_string_lossy();
+        assert!(inside(&b, "src/a.ts").is_ok());
+        assert!(inside(&b, "src/new.ts").is_ok()); // not created yet
+        assert!(inside(&b, "../outside.txt").is_err());
+        assert!(inside(&b, "src/../../outside.txt").is_err());
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn relink_keeps_a_tree() {
@@ -651,24 +745,28 @@ async fn discard_worktree(app: AppHandle, state: State<'_, AppState>, project_ro
         std::thread::sleep(Duration::from_millis(300)); // let the process release file handles (Windows)
     }
     let pdir = worktree::project_dir(&home(&app)?, &project_root);
-    if is_root(&project_root, &worktree_path) || !worktree::is_managed(&worktree_path, &pdir) {
-        // the Maestro, or a worktree made outside Maestro: forget the agent, never touch the folder or its branch
-        let meta = files(&app, &project_root, &worktree_path)?.meta;
-        let _ = std::fs::remove_file(meta.with_extension("settings.json"));
-        let _ = std::fs::remove_file(meta);
-        return Ok(());
+    // the Maestro, or a worktree made outside Maestro: never touch the folder or its branch
+    if !is_root(&project_root, &worktree_path) && worktree::is_managed(&worktree_path, &pdir) {
+        let keep_branch = files(&app, &project_root, &worktree_path)?.read_meta().is_some_and(|m| m.keep_branch);
+        worktree::discard(&project_root, &worktree_path, &branch, keep_branch)?;
     }
-    let keep_branch = files(&app, &project_root, &worktree_path)?.read_meta().is_some_and(|m| m.keep_branch);
-    worktree::discard(&project_root, &worktree_path, &branch, keep_branch)?;
-    // a discarded worktree is no longer anyone's worker
-    for (_, f) in agent_files(&app, &project_root)? {
-        if let Some(mut m) = f.read_meta().filter(|m| m.workers.iter().any(|w| w.eq_ignore_ascii_case(&worktree_path))) {
-            m.workers.retain(|w| !w.eq_ignore_ascii_case(&worktree_path));
+    forget_agent(&app, &project_root, &worktree_path)
+}
+
+/// Drops an agent's link from every worker list and deletes all its files (meta and what spawning writes next to it).
+fn forget_agent(app: &AppHandle, project_root: &str, worktree_path: &str) -> Result<(), String> {
+    let same = |w: &String| w.replace('\\', "/").eq_ignore_ascii_case(&worktree_path.replace('\\', "/"));
+    for (_, f) in agent_files(app, project_root)? {
+        if let Some(mut m) = f.read_meta().filter(|m| m.workers.iter().any(same)) {
+            m.workers.retain(|w| !same(w));
             let _ = f.write_meta(&m);
         }
     }
-    let meta = files(&app, &project_root, &worktree_path)?.meta;
-    let _ = std::fs::remove_file(meta.with_extension("settings.json"));
+    let meta = files(app, project_root, worktree_path)?.meta;
+    for ext in ["settings.json", "brief.md"] {
+        let _ = std::fs::remove_file(meta.with_extension(ext));
+    }
+    let _ = std::fs::remove_dir_all(meta.with_extension("brief"));
     let _ = std::fs::remove_file(meta);
     Ok(())
 }
@@ -705,9 +803,73 @@ async fn git_status(worktree_path: String) -> Result<Vec<FileChange>, String> {
     Ok(worktree::status(&worktree_path)?.into_iter().map(|(code, path)| FileChange { code, path }).collect())
 }
 
+
+// ---------- code editor ----------
+
+/// `rel` inside `base`, refusing anything that resolves outside it (`..`, absolute paths, links out).
+fn inside(base: &str, rel: &str) -> Result<PathBuf, String> {
+    let root = std::fs::canonicalize(base).map_err(|e| e.to_string())?;
+    let p = root.join(rel);
+    // a new file has no canonical path yet; its folder must still be inside
+    let real = std::fs::canonicalize(&p).or_else(|_| p.parent().map_or(Err(()), |d| std::fs::canonicalize(d).map_err(|_| ()))).map_err(|_| format!("{rel}: 경로를 찾을 수 없어요"))?;
+    if !real.starts_with(&root) {
+        return Err(format!("{rel}: 워크트리 밖의 파일이에요"));
+    }
+    Ok(p)
+}
+
+fn mtime(p: &Path) -> u64 {
+    std::fs::metadata(p).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as u64)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TextFile {
+    text: String,
+    mtime: u64,
+}
+
+const EDIT_MAX: u64 = 5 << 20;
+
+/// A text file for the editor; refuses big or binary files (a NUL byte).
 #[tauri::command]
-async fn git_diff_file(worktree_path: String, file: String) -> Result<String, String> {
-    worktree::diff(&worktree_path, &file)
+async fn read_text_file(base: String, rel: String) -> Result<TextFile, String> {
+    let p = inside(&base, &rel)?;
+    if std::fs::metadata(&p).map_err(|e| e.to_string())?.len() > EDIT_MAX {
+        return Err("5MB가 넘는 파일은 열지 않아요".into());
+    }
+    let bytes = std::fs::read(&p).map_err(|e| e.to_string())?;
+    if bytes.contains(&0) {
+        return Err("바이너리 파일이라 열 수 없어요".into());
+    }
+    Ok(TextFile { text: String::from_utf8_lossy(&bytes).into_owned(), mtime: mtime(&p) })
+}
+
+/// 0 when missing; the editor polls it to notice an agent's edits.
+#[tauri::command]
+async fn file_mtime(base: String, rel: String) -> Result<u64, String> {
+    Ok(mtime(&inside(&base, &rel)?))
+}
+
+/// Saves unless the file changed on disk since `expected` (its mtime when read), so an agent's edit isn't overwritten.
+#[tauri::command]
+async fn write_text_file(base: String, rel: String, text: String, expected: u64, force: bool) -> Result<u64, String> {
+    let p = inside(&base, &rel)?;
+    if !force && mtime(&p) != expected {
+        return Err("CHANGED".into());
+    }
+    std::fs::write(&p, text).map_err(|e| e.to_string())?;
+    Ok(mtime(&p))
+}
+
+/// The file as of HEAD for the diff view; "" when it's new.
+#[tauri::command]
+async fn file_at_head(base: String, rel: String) -> Result<String, String> {
+    // a deleted file has no path left to resolve, so check the spelling (git only reads the repo anyway)
+    if Path::new(&rel).is_absolute() || rel.split(['/', '\\']).any(|s| s == "..") {
+        return Err(format!("{rel}: 워크트리 밖의 파일이에요"));
+    }
+    Ok(worktree::show_head(&base, &rel).unwrap_or_default())
 }
 
 // ---------- canvas ----------
@@ -784,6 +946,11 @@ fn main() {
             app.manage(server);
             agent::install_cli(&home(app.handle())?);
             library::seed_personas(&home(app.handle())?);
+            let h = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(Duration::from_secs(30));
+                reap_away(&h);
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -815,6 +982,7 @@ fn main() {
             antigravity_models,
             answer_approval,
             stop_agent,
+            set_away,
             pty_snapshot,
             pty_write,
             pty_resize,
@@ -822,7 +990,10 @@ fn main() {
             discard_worktree,
             list_dir,
             git_status,
-            git_diff_file,
+            read_text_file,
+            write_text_file,
+            file_mtime,
+            file_at_head,
             load_canvas_state,
             save_canvas_state,
         ])

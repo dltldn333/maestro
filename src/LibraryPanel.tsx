@@ -78,7 +78,9 @@ export function LibraryPanel({ root, onClose }: { root: string; onClose: () => v
                 className="library-file"
                 draggable
                 title={file.path}
+                onDragEnd={() => delete document.documentElement.dataset.dragging}
                 onDragStart={(e) => {
+                  document.documentElement.dataset.dragging = "md"; // lights up the canvas (styles.css)
                   e.dataTransfer.setData(MD_MIME, JSON.stringify(file));
                   e.dataTransfer.effectAllowed = "copy";
                 }}
