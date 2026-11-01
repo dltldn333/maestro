@@ -7,13 +7,14 @@ mod cli;
 mod commands;
 mod control;
 mod library;
+mod workspace;
 mod worktree;
 
 use agent::{Agent, AgentMeta, AgentState, Files, Tail};
 use approval::{Approval, Approvals};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -28,12 +29,37 @@ pub(crate) struct AppState {
     away: Mutex<Away>,
 }
 
-/// Which project is on screen, when each other one was left, and after how long its idle agents stop.
+/// Which projects are on screen (per window: splits can show several, pop-out windows more), when each other
+/// one was left, and after how long its idle agents stop.
 #[derive(Default)]
 struct Away {
-    active: Option<String>,
+    on_screen: HashMap<String, HashSet<String>>,
     minutes: u64,
     left: HashMap<String, std::time::Instant>,
+}
+
+impl Away {
+    fn visible(&self) -> HashSet<String> {
+        self.on_screen.values().flatten().cloned().collect()
+    }
+
+    /// Window `label` now shows `roots` (empty: the window is gone). Projects nobody shows any more start their
+    /// away clock; ones shown again stop it.
+    fn show(&mut self, label: &str, roots: HashSet<String>) {
+        let before = self.visible();
+        if roots.is_empty() {
+            self.on_screen.remove(label);
+        } else {
+            self.on_screen.insert(label.to_string(), roots);
+        }
+        let after = self.visible();
+        for r in before.difference(&after) {
+            self.left.insert(r.clone(), std::time::Instant::now());
+        }
+        for r in &after {
+            self.left.remove(r);
+        }
+    }
 }
 
 impl AppState {
@@ -86,7 +112,7 @@ fn reap_away(app: &AppHandle) {
         if a.minutes == 0 {
             return;
         }
-        (a.active.clone(), Duration::from_secs(a.minutes * 60), a.left.clone())
+        (a.visible(), Duration::from_secs(a.minutes * 60), a.left.clone())
     };
     let waiting: Vec<String> = app.state::<Approvals>().pending().iter().map(|p| p.worktree_path.to_lowercase()).collect();
     let roots = state.roots.lock().unwrap().clone();
@@ -94,7 +120,7 @@ fn reap_away(app: &AppHandle) {
         .filter(|(k, a)| {
             let Some(root) = roots.get(*k) else { return false };
             // a project never opened this run counts as left at launch
-            Some(root) != active.as_ref()
+            !active.contains(root)
                 && left.get(root).is_none_or(|t| t.elapsed() >= limit)
                 && *a.state.lock().unwrap() == AgentState::Idle
                 && a.quiet_for() >= limit
@@ -112,16 +138,11 @@ fn reap_away(app: &AppHandle) {
     }
 }
 
+/// The projects on screen in the calling window (each window reports its own; a closed one is dropped).
 #[tauri::command]
-fn set_away(state: State<AppState>, active_root: Option<String>, minutes: u64) {
+fn set_away(window: tauri::Window, state: State<AppState>, active_roots: Vec<String>, minutes: u64) {
     let mut a = state.away.lock().unwrap();
-    let active = active_root.map(|r| r.to_lowercase());
-    if a.active != active {
-        if let Some(prev) = a.active.take() {
-            a.left.insert(prev, std::time::Instant::now());
-        }
-        a.active = active;
-    }
+    a.show(window.label(), active_roots.iter().map(|r| r.to_lowercase()).collect());
     a.minutes = minutes;
 }
 
@@ -390,6 +411,21 @@ fn relink(tree: &[(String, Vec<String>)], parent: &str, child: &str) -> Result<V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn away_clock_counts_projects_no_window_shows() {
+        let set = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<HashSet<_>>();
+        let mut a = Away::default();
+        a.show("main", set(&["a", "b"]));
+        a.show("ws-1", set(&["b", "c"]));
+        assert!(a.left.is_empty());
+        a.show("main", set(&["a"])); // b still in the pop-out
+        assert!(!a.left.contains_key("b"));
+        a.show("ws-1", HashSet::new()); // pop-out closed: b and c are away now
+        assert!(a.left.contains_key("b") && a.left.contains_key("c") && !a.left.contains_key("a"));
+        a.show("main", set(&["a", "c"])); // c back on screen
+        assert!(!a.left.contains_key("c"));
+    }
 
     #[test]
     fn repo_root_spellings_match() {
@@ -938,6 +974,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
+        .manage(workspace::Workspace::default())
         .setup(|app| {
             let server = Approvals::start(app.handle().clone())?;
             // dev builds only: lets you try the CLI from any terminal (set these plus MAESTRO_WORKTREE)
@@ -945,6 +982,7 @@ fn main() {
             eprintln!("[maestro] MAESTRO_URL={} MAESTRO_TOKEN={}", server.addr(), server.token());
             app.manage(server);
             agent::install_cli(&home(app.handle())?);
+            workspace::warm_later(app.handle().clone());
             library::seed_personas(&home(app.handle())?);
             let h = app.handle().clone();
             std::thread::spawn(move || loop {
@@ -990,6 +1028,13 @@ fn main() {
             discard_worktree,
             list_dir,
             git_status,
+            workspace::ws_get,
+            workspace::ws_commit,
+            workspace::ws_draft_set,
+            workspace::ws_draft_get,
+            workspace::ws_window_ready,
+            workspace::ws_take_window,
+            workspace::ws_show_window,
             read_text_file,
             write_text_file,
             file_mtime,
@@ -999,12 +1044,21 @@ fn main() {
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Maestro")
-        .run(|app, event| {
+        .run(|app, event| match event {
             // no orphan agents after the window closes
-            if let tauri::RunEvent::Exit = event {
+            tauri::RunEvent::Exit => {
                 for a in app.state::<AppState>().agents.lock().unwrap().values() {
                     a.kill();
                 }
             }
+            tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::Destroyed, .. } => {
+                // a closed window shows nothing any more; closing the main window ends the app, pop-outs included
+                app.state::<AppState>().away.lock().unwrap().show(&label, HashSet::new());
+                app.state::<workspace::Workspace>().window_closed(app, &label);
+                if label == "main" {
+                    app.exit(0);
+                }
+            }
+            _ => {}
         });
 }

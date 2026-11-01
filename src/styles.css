@@ -209,12 +209,14 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--m
 .stage-nav button.icon { display: grid; place-items: center; width: 24px; height: 22px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--mae-muted); }
 .stage-nav button.icon:hover:not(:disabled) { background: var(--mae-hover); color: var(--mae-text); }
 .stage-nav button.icon:disabled { opacity: .35; }
-.stage-tab { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 200px; padding: 0 6px 0 10px; font-size: 12px; color: var(--mae-muted); background: none; border: 0; border-right: 1px solid var(--mae-border); border-radius: 0; cursor: pointer; white-space: nowrap; flex: none; transition: background var(--mae-dur) var(--mae-ease), color var(--mae-dur) var(--mae-ease); }
+.stage-tab { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 200px; padding: 0 6px 0 10px; font-size: 12px; color: var(--mae-muted); background: none; border: 0; border-right: 1px solid var(--mae-border); border-radius: 0; cursor: pointer; white-space: nowrap; flex: 0 1 auto; transition: background var(--mae-dur) var(--mae-ease), color var(--mae-dur) var(--mae-ease); }
+/* many tabs: each gives way down to this (name cut short) before the row starts to scroll */
+.stage-tab:not(.home) { min-width: 88px; }
 .stage-tab:hover { color: var(--mae-text); background: var(--mae-hover); }
 /* the open tab takes the stage's colour and drops the line under it, so it opens into the stage; accent line on top */
 .stage-tab[data-on] { color: var(--mae-text); background: var(--mae-canvas); margin-bottom: -1px; box-shadow: inset 0 2px 0 var(--mae-accent); }
 /* the project's own tab stands apart: accent text and a faint accent fill, stronger when open */
-.stage-tab.home { padding-right: 12px; font-weight: 600; color: var(--mae-accent); background: color-mix(in srgb, var(--mae-accent) 9%, var(--mae-panel)); }
+.stage-tab.home { flex: none; max-width: 180px; font-weight: 600; color: var(--mae-accent); background: color-mix(in srgb, var(--mae-accent) 9%, var(--mae-panel)); }
 .stage-tab.home:hover { color: var(--mae-accent); background: color-mix(in srgb, var(--mae-accent) 15%, var(--mae-panel)); }
 .stage-tab.home[data-on] { color: var(--mae-accent); background: color-mix(in srgb, var(--mae-accent) 14%, var(--mae-canvas)); }
 .stage-tab.home .tree-icon { color: inherit; }
@@ -228,6 +230,43 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--m
 .stage-tab-x[data-dirty]::before { content: "●"; font-size: 9px; color: var(--mae-accent); }
 .stage-tab-x[data-dirty]:hover::before { content: "×"; font-size: 14px; color: inherit; }
 .code-view[hidden] { display: none; }
+
+/* split view (Workspace.tsx): the window's tab groups in nested rows and columns, each with its own project */
+.groups { flex: 1; min-height: 0; display: flex; }
+.split { flex: 1; min-width: 0; min-height: 0; display: flex; }
+.split[data-dir="col"] { flex-direction: column; }
+.split[data-dir="row"] > * + * { border-left: 1px solid var(--mae-border); }
+.split[data-dir="col"] > * + * { border-top: 1px solid var(--mae-border); }
+.group { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+/* a tab dragged over a group: the layer takes the drag (the canvas, terminal and editor would swallow it) and the
+   preview shows where it lands: an edge half splits that way, the whole group joins it */
+.drop-layer { position: absolute; inset: 0; z-index: 40; }
+.drop-preview { position: absolute; inset: 6px; pointer-events: none; border: 2px solid color-mix(in srgb, var(--mae-accent) 70%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--mae-accent) 16%, transparent); transition: inset var(--mae-dur) var(--mae-ease); }
+.drop-preview[data-zone="left"] { right: 50%; }
+.drop-preview[data-zone="right"] { left: 50%; }
+.drop-preview[data-zone="top"] { bottom: 50%; }
+.drop-preview[data-zone="bottom"] { top: 50%; }
+/* only the focused group's open tab carries the accent */
+.stage-tabs:not([data-focused]) .stage-tab[data-on] { box-shadow: inset 0 2px 0 var(--mae-border); }
+/* the row's own arrows when it scrolls (StageTabs) */
+.tab-scroll { flex: none; display: grid; place-items: center; width: 22px; padding: 0; border: 0; border-radius: 0; background: var(--mae-panel); color: var(--mae-muted); }
+.tab-scroll:hover:not(:disabled) { background: var(--mae-hover); color: var(--mae-text); }
+.tab-scroll:disabled { opacity: .3; }
+.tab-scroll:first-child { border-right: 1px solid var(--mae-border); }
+/* where a dragged tab would land in the row */
+.stage-tab { position: relative; }
+.stage-tab[data-insert]::before { content: ""; position: absolute; top: 3px; bottom: 3px; width: 2px; border-radius: 1px; background: var(--mae-accent); z-index: 1; }
+.stage-tab[data-insert="before"]::before { left: -1px; }
+.stage-tab[data-insert="after"]::before { right: -1px; }
+.stage-tab-list[data-dropping] { background: color-mix(in srgb, var(--mae-accent) 12%, var(--mae-panel)); }
+.stage-nav-sep { width: 1px; height: 14px; margin: 0 2px; background: var(--mae-border); }
+/* right-click menu on a tab */
+.ctx-menu { position: fixed; z-index: 100; min-width: 150px; padding: 4px; display: grid; background: var(--mae-panel); border: 1px solid var(--mae-border); border-radius: 8px; box-shadow: var(--mae-shadow); animation: pop-in var(--mae-dur) var(--mae-ease); }
+.ctx-menu button { padding: 6px 10px; text-align: left; font-size: 12px; color: var(--mae-text); background: none; border: 0; border-radius: 5px; }
+.ctx-menu button:hover { background: var(--mae-hover); }
+.ctx-menu hr { margin: 4px 2px; border: 0; border-top: 1px solid var(--mae-border); }
+/* pop-out window: back to the main window */
+.dock-btn { margin-right: 6px; padding: 3px 10px; font-size: 12px; }
 /* side panels slide shut by animating width; contents keep full width so they don't reflow mid-animation.
    They stay mounted so tab/tree state survives; visibility flips after the slide so hidden controls can't take focus. */
 .sidebar, .rightpanel { transition: width var(--mae-dur) var(--mae-ease), margin var(--mae-dur) var(--mae-ease), opacity var(--mae-dur) var(--mae-ease), visibility 0s; }
@@ -282,6 +321,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--m
 .empty { height: 100%; display: grid; place-content: center; text-align: center; padding: 24px; }
 
 /* ---------- left sidebar ---------- */
+/* rows are clicked and double-clicked, not read as text: no selection flashing on a double click */
+.sidebar .repo-row, .sidebar .wt-row { user-select: none; }
 .sidebar { width: var(--mae-sidebar-w); flex: none; background: var(--mae-panel); display: flex; flex-direction: column; min-height: 0; }
 .sb-head { display: flex; align-items: center; padding: 10px 10px 6px 14px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--mae-muted); }
 .sb-head span { flex: 1; }

@@ -22,6 +22,7 @@ updated: 2026-11-01
 | `speed` | `"fast"` (120ms) / `"normal"` (220ms) / `"slow"` (360ms) | `"normal"` | 모션 길이. CSS 변수 `--mae-dur` |
 | `motion` | `boolean` | `true` | 모션 켜기. 끄거나 OS가 `prefers-reduced-motion: reduce`면 `--mae-dur`가 `0ms` |
 | `panelStyle` | `"cards" \| "lines" \| "full"` | `"cards"` | 패널 구분: 분리 / 통합 / 와이드(여백 없음). `<html data-panels>`로 들어가요 |
+| `autoSave` | `boolean` | `false` | 코드 편집기 자동 저장(입력을 멈추고 1초 뒤). 설정 → 파일 |
 | `defaultAgent` | `string` | `"auto"` | 새 워크트리의 기본 에이전트 CLI id. `"auto"`는 쓸 수 있는 첫 에이전트 |
 | `defaultPermission` | `string` | `"acceptEdits"` | 새 워크트리가 시작할 권한 모드 |
 | `disabledAgents` | `string[]` | `[]` | 설치돼 있지만 꺼 둔 에이전트. 워크트리를 만들 때 고를 수 없어요 |

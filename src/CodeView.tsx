@@ -49,11 +49,19 @@ type Doc ={ text: string; mtime: number; head: string; missing: boolean };
  * A worktree file in Monaco over the stage: edit and save, or compare with HEAD. Follows the agent's edits on disk.
  * One per file tab; the ones not on screen stay mounted (hidden) so switching tabs keeps unsaved edits.
  */
-export default function CodeView({ base, rel, diff, active }: { base: string; rel: string; diff: boolean; active: boolean }) {
+export default function CodeView({ groupId, base, rel, diff, active }: { groupId: string; base: string; rel: string; diff: boolean; active: boolean }) {
   const openEditor = useStore((s) => s.openEditor);
   const closeTab = useStore((s) => s.closeTab);
   const setFileDirty = useStore((s) => s.setFileDirty);
   const theme = useSettings((s) => (isLightTheme(s.theme) ? "maestro-light" : "maestro-dark"));
+  const autoSave = useSettings((s) => s.autoSave);
+  const key = fileKey(base, rel);
+  const loaded = useRef(false);
+  const autoTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const draftTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const pendingDraft = useRef<string | null | undefined>(undefined); // typed but not yet sent to the backend
+  const autoSaveRef = useRef(autoSave);
+  autoSaveRef.current = autoSave;
   const [doc, setDoc] = useState<Doc | null>(null);
   const [err, setErr] = useState("");
   const [dirty, setDirty] = useState(false);
@@ -76,11 +84,21 @@ export default function CodeView({ base, rel, diff, active }: { base: string; re
         throw e;
       });
       saved.current = f.text;
-      draft.current = null; // freshly read, nothing unsaved (the preview shows the file, not an old draft)
       mtime.current = f.mtime;
+      if (!loaded.current) {
+        // first open: this tab may have come from another group with unsaved edits
+        loaded.current = true;
+        const d = await ipc.wsDraftGet(key).catch(() => null);
+        draft.current = d ?? null;
+        setDirty(d != null && d !== f.text);
+      } else {
+        // re-read (the agent changed it, or "디스크 내용 불러오기"): nothing unsaved any more
+        draft.current = null;
+        void ipc.wsDraftSet(key, null);
+        setDirty(false);
+      }
       setDoc({ text: f.text, mtime: f.mtime, head, missing: "missing" in f });
-      ed.current?.getModel()?.setValue(f.text);
-      setDirty(false);
+      ed.current?.getModel()?.setValue(draft.current ?? f.text);
       setStale(false);
       setErr("");
     } catch (e) {
@@ -95,7 +113,9 @@ export default function CodeView({ base, rel, diff, active }: { base: string; re
     try {
       mtime.current = await ipc.writeTextFile(base, rel, text, mtime.current, force);
       saved.current = text;
-      setDirty(false);
+      clearTimeout(draftTimer.current);
+      void ipc.wsDraftSet(key, null);
+      setDirty(ed.current?.getModel() ? ed.current.getValue() !== text : false); // typed on while it saved
       setStale(false);
     } catch (e) {
       if (String(e) === "CHANGED") setStale(true);
@@ -123,23 +143,47 @@ export default function CodeView({ base, rel, diff, active }: { base: string; re
     e.onDidChangeModelContent(() => {
       const v = e.getValue();
       draft.current = v;
+      // kept by the backend (debounced), so the tab keeps its edits in whatever window or group it moves to
+      clearTimeout(draftTimer.current);
+      pendingDraft.current = v !== saved.current ? v : null;
+      draftTimer.current = setTimeout(() => {
+        pendingDraft.current = undefined;
+        void ipc.wsDraftSet(key, v !== saved.current ? v : null);
+      }, 300);
       setDirty(v !== saved.current);
+      // auto-save (settings → 파일): a second after typing stops
+      clearTimeout(autoTimer.current);
+      if (autoSaveRef.current && v !== saved.current) autoTimer.current = setTimeout(() => saveRef.current(), 1000);
     });
     e.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => saveRef.current());
   };
 
   // the tab shows ● and asks before closing; an edit also keeps the tab (no longer a preview)
   useEffect(() => {
-    setFileDirty(fileKey(base, rel), dirty);
-    if (dirty) useStore.getState().pinTab({ kind: "file", base, rel, diff });
+    setFileDirty(key, dirty);
+    if (dirty) useStore.getState().pinTab({ kind: "file", base, rel, diff }, groupId);
   }, [dirty]);
-  useEffect(() => () => setFileDirty(fileKey(base, rel), false), []);
+  useEffect(
+    () => () => {
+      clearTimeout(autoTimer.current);
+      clearTimeout(draftTimer.current);
+      // the tab moved to another group or window (still open somewhere): its last keystrokes go with it
+      const stillOpen = Object.values(useStore.getState().groups).some((g) => g.tabs.some((t) => t.kind === "file" && t.base === base && t.rel === rel));
+      if (stillOpen && pendingDraft.current !== undefined) void ipc.wsDraftSet(key, pendingDraft.current);
+      setFileDirty(key, false);
+    },
+    [],
+  );
+  // auto-save turned on with edits waiting: save them now rather than on the next keystroke
+  useEffect(() => void (autoSave && dirtyRef.current && saveRef.current()), [autoSave]);
 
   const close = () => {
     if (dirty && !confirm("저장하지 않은 변경이 있어요. 닫을까요?")) return;
-    closeTab({ kind: "file", base, rel, diff });
+    closeTab({ kind: "file", base, rel, diff }, groupId);
   };
-  const uri = `file:///${base.replace(/\\/g, "/")}/${rel}`;
+  // per group: the same file open in two split groups gets two models (a shared one would be disposed by
+  // whichever editor unmounts first)
+  const uri = `file:///${groupId}/${base.replace(/\\/g, "/")}/${rel}`;
   const mode = diff ? "diff" : preview ? "preview" : "edit";
   const setMode = (m: typeof mode) => {
     setPreview(m === "preview");
@@ -177,7 +221,7 @@ export default function CodeView({ base, rel, diff, active }: { base: string; re
             original={doc.head}
             modified={draft.current ?? doc.text}
             language={languageOf(rel)}
-            originalModelPath={`inmemory://head/${rel}`}
+            originalModelPath={`inmemory://head/${groupId}/${rel}`}
             modifiedModelPath={uri}
             theme={theme}
             options={{ ...OPTIONS, readOnly: doc.missing, originalEditable: false }}

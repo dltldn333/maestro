@@ -58,6 +58,8 @@ type Prefs = {
   fullView: AgentView;
   /** stop idle agents of a project left this many minutes ago (they resume on return); 0 = never */
   awayMinutes: number;
+  /** the code editor saves a second after typing stops */
+  autoSave: boolean;
 };
 
 export const AWAY_CHOICES = [
@@ -68,7 +70,7 @@ export const AWAY_CHOICES = [
 ] as const;
 
 export const useSettings = create<Prefs & { set: (p: Partial<Prefs>) => void }>()(
-  persist((set) => ({ theme: "dark", easing: "smooth", speed: "normal", motion: true, panelStyle: "cards", defaultAgent: "auto", defaultPermission: "acceptEdits", disabledAgents: [], agentModels: {}, assistantAgent: "claude-code", assistantModel: "", agentLayout: "full", fullView: "chat", awayMinutes: 15, set }), { name: "maestro.settings" }),
+  persist((set) => ({ theme: "dark", easing: "smooth", speed: "normal", motion: true, panelStyle: "cards", defaultAgent: "auto", defaultPermission: "acceptEdits", disabledAgents: [], agentModels: {}, assistantAgent: "claude-code", assistantModel: "", agentLayout: "full", fullView: "chat", awayMinutes: 15, autoSave: false, set }), { name: "maestro.settings" }),
 );
 
 /** Motion duration in ms; 0 when the user or the OS turned motion off. */
@@ -86,3 +88,5 @@ function applySettings(s: Prefs) {
 }
 applySettings(useSettings.getState()); // before first paint: no flash of the default theme
 useSettings.subscribe(applySettings);
+// another window (main ↔ pop-out) changed a setting: pick it up here too
+window.addEventListener("storage", (e) => e.key === "maestro.settings" && void useSettings.persist.rehydrate());

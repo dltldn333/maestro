@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { GearIcon } from "./SettingsDialog";
 import { AgentLogo } from "./NewAgentDialog";
@@ -40,8 +41,9 @@ function treeRows(wts: Worktree[]) {
 }
 
 export function Sidebar({ onNewWorktree, onOpenSettings }: { onNewWorktree: (repo: Repo) => void; onOpenSettings: () => void }) {
-  const { ready, repos, activeRoot, worktrees, selectedPath, addRepo, removeRepo, setActive, select, setError, approvals } = useStore();
+  const { ready, repos, activeRoot, worktrees, selectedPath, addRepo, removeRepo, setActive, openProject, select, setError, approvals } = useStore();
   const waitingPaths = new Set(approvals.map((a) => a.worktreePath.toLowerCase()));
+  const clickTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const pickRepo = async () => {
     try {
@@ -63,7 +65,21 @@ export function Sidebar({ onNewWorktree, onOpenSettings }: { onNewWorktree: (rep
           const wts = worktrees.filter((w) => w.root === r.root);
           return (
             <section key={r.root} className="repo" data-active={r.root === activeRoot || undefined}>
-              <div className="repo-row" onClick={() => setActive(r.root)} title={r.root}>
+              {/* click: the project in the focused split (or the one showing it); double click: a split of its own */}
+              {/* the click waits a moment: switching the focused split first would leave the double click nothing to split */}
+              <div
+                className="repo-row"
+                onClick={(e) => {
+                  if (e.detail > 1) return;
+                  clearTimeout(clickTimer.current);
+                  clickTimer.current = setTimeout(() => setActive(r.root), 220);
+                }}
+                onDoubleClick={() => {
+                  clearTimeout(clickTimer.current);
+                  openProject(r.root);
+                }}
+                title={`${r.root}\n더블클릭하면 분할 화면으로 열어요`}
+              >
                 <span className="repo-name">{r.name}</span>
                 <span className="muted">{r.defaultBranch}</span>
                 <span className="spacer" />
@@ -99,10 +115,8 @@ export function Sidebar({ onNewWorktree, onOpenSettings }: { onNewWorktree: (rep
                     style={{ paddingLeft: 22 + depth * 16 }}
                     title={w.path}
                     // a click previews the worktree in the reusable tab, a double click keeps its tab (VS Code)
-                    onClick={() => {
-                      if (r.root !== activeRoot) setActive(r.root);
-                      select(w.path);
-                    }}
+                    // it opens in the split showing its project (select finds or switches one)
+                    onClick={() => select(w.path)}
                     onDoubleClick={() => select(w.path, true)}
                   >
                     {depth > 0 && <span className="wt-elbow" aria-hidden />}

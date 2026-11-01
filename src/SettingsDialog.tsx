@@ -16,9 +16,20 @@ export const GearIcon = () => (
   </svg>
 );
 
+/** An on/off setting: a toggle switch (a checkbox underneath, so keyboard and screen readers work as usual). */
+function Switch({ on, disabled, onChange }: { on: boolean; disabled?: boolean; onChange: (on: boolean) => void }) {
+  return (
+    <label className="switch" title={on ? "끄기" : "켜기"}>
+      <input type="checkbox" role="switch" checked={on} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />
+      <span />
+    </label>
+  );
+}
+
 const SECTIONS = [
   { id: "agents", label: "에이전트", desc: "쓸 에이전트를 켜고 끄고, 새 워크트리에 쓸 기본 에이전트와 모델을 정해요." },
   { id: "run", label: "실행", desc: "에이전트 CLI를 언제 켜 두고 언제 끌지 정해요." },
+  { id: "files", label: "파일", desc: "코드 편집기에서 파일을 다루는 방식을 정해요." },
   { id: "style", label: "스타일", desc: "테마와 화면 움직임의 느낌을 정해요." },
 ] as const;
 
@@ -64,15 +75,7 @@ function AgentTile({ id, label, soon }: { id: string; label: string; soon?: bool
           <span className="agent-pill" data-state={state}>{state}</span>
         </div>
         <span className="spacer" />
-        <label className="switch" title={on ? "끄기" : "켜기"}>
-          <input
-            type="checkbox"
-            checked={on}
-            disabled={!installed}
-            onChange={(e) => s.set({ disabledAgents: e.target.checked ? s.disabledAgents.filter((x) => x !== id) : [...s.disabledAgents, id] })}
-          />
-          <span />
-        </label>
+        <Switch on={on} disabled={!installed} onChange={(v) => s.set({ disabledAgents: v ? s.disabledAgents.filter((x) => x !== id) : [...s.disabledAgents, id] })} />
       </div>
       <code className="agent-tile-cmd">{installed ? commandPreview(id, s.defaultPermission, s.agentModels[id]) : (st?.installCmd || "앱과 함께 설치돼요")}</code>
       <div className="agent-tile-actions">
@@ -270,6 +273,19 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                 {[...installedAgents, ...availableAgents].map((a) => <AgentTile key={a.id} id={a.id} label={a.label} soon={a.disabled} />)}
               </div>
             </>
+          ) : sec === "files" ? (
+            <>
+              <h4>파일 편집</h4>
+              <section className="set-card">
+                <div className="set-row">
+                  <div>
+                    <div>자동 저장</div>
+                    <div className="muted small">입력을 멈추고 1초 뒤에 저장해요. 그 사이 에이전트가 같은 파일을 바꿨으면 덮어쓰지 않고 알려 줘요.</div>
+                  </div>
+                  <Switch on={s.autoSave} onChange={(v) => s.set({ autoSave: v })} />
+                </div>
+              </section>
+            </>
           ) : sec === "run" ? (
             <>
               <h4>자리 비움</h4>
@@ -316,7 +332,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                     <div>모션 사용</div>
                     <div className="muted small">패널 접기·펴기, 미니맵 확대, 창 열기, 블록으로 이동</div>
                   </div>
-                  <input type="checkbox" checked={s.motion} onChange={(e) => s.set({ motion: e.target.checked })} />
+                  <Switch on={s.motion} onChange={(v) => s.set({ motion: v })} />
                 </div>
                 <div className="set-row">
                   <div>이징</div>

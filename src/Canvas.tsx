@@ -564,11 +564,8 @@ export function Canvas({ root, scope, onNewAgent, onOpenSettings }: {
       )}
       <Panel position="top-left">
         {/* the same toolbar on every agent canvas (the Maestro's and each worktree's) */}
+        {/* no name here: the tab above already says which canvas this is */}
         <div className="canvas-tools">
-          <span className="crumb">
-            {self?.isMaestro && <span className="maestro-crown">♛ </span>}
-            {self?.name ?? folderName(scope)}
-          </span>
           <button className="primary" title="이 에이전트의 워커로 새 워크트리 만들기" onClick={() => onNewAgent({ parentPath: scope })}>+ 워커</button>
           <button title="에이전트 블록에 이어서 지시를 보내는 블록" onClick={addPrompt}>+ 프롬프트 블록</button>
           <button title="등록한 폴더의 마크다운을 블록으로 끌어오기" data-on={libraryOpen || undefined} onClick={() => setLibraryOpen(!libraryOpen)}>보관함</button>

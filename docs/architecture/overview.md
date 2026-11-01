@@ -41,6 +41,7 @@ Maestro는 Tauri v2 앱이에요. Rust 백엔드가 에이전트 CLI를 PTY(가�
 **프런트엔드 상태**
 - `useStore`(store.ts): 저장소, 워크트리, 선택, 승인 대기, CLI 설치 상태, 열린 편집기 파일
 - `useSettings`(settings.ts): 사용자 설정. localStorage에 저장돼요. → [설정 키](../reference/settings-keys.md)
+- 워크스페이스(창·분할·탭 묶음): 백엔드 `workspace.rs`가 한 벌을 가지고, 창마다 `useStore`가 그걸 보여 줘요. → [워크스페이스](../features/ui/split-and-windows.md)
 - 백엔드 호출은 모두 `ipc.*`(ipc.ts)를 거쳐요. → [Tauri 명령 목록](../reference/tauri-commands.md)
 
 **개발 실행**

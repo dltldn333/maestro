@@ -27,12 +27,15 @@ updated: 2026-11-01
 **실행 탭**
 - 자리 비움: "자리 비운 프로젝트 정리" 드롭다운(5분 / 15분 / 1시간 / 끄지 않음) → [자리 비움](../agents/away-stop.md)
 
+**파일 탭**
+- 파일 편집: 자동 저장 켜기/끄기(기본 끔). 켜면 입력을 멈추고 1초 뒤에 저장해요. → [코드 편집기](../editor/code-editor.md)
+
 **스타일 탭**
 - 테마 견본, 패널 구분(분리 / 통합 / 와이드), 모션 사용, 이징, 속도, 미리보기 → [테마와 모션](themes-and-motion.md)
 
 ## 구현
 
-- `SettingsDialog`(SettingsDialog.tsx): `SECTIONS`(`agents`, `run`, `style`)로 탭을 나눠요.
+- `SettingsDialog`(SettingsDialog.tsx): `SECTIONS`(`agents`, `run`, `files`, `style`)로 탭을 나눠요.
 - 구성 요소: `AgentTile`, `AssistantRow`, `InstalledDetails`, `SetupTerminal`, `InstallHelp`, `useModels`, `GearIcon`
 - 값은 모두 `useSettings`(zustand persist, 키 `maestro.settings`)에 저장돼요. → [설정 키](../../reference/settings-keys.md)
 
@@ -41,3 +44,4 @@ updated: 2026-11-01
 - 테마 설정은 자주 쓰지 않아서 사이드바가 아니라 팝업에 넣었어요(Antigravity 앱의 설정 창 참고).
 - 탭 이름 "일반"은 "에이전트"로 바꿨어요. 레이아웃은 Orca를 너무 닮지 않게 자체 스타일로 다듬었어요.
 - 자리 비움 설정은 에이전트 설정과 성격이 달라서 새 "실행" 탭으로 뺐어요.
+- 편집기 설정은 "파일" 탭에 모아요. 지금은 자동 저장뿐이고, 줄 바꿈·글자 크기·탭 크기·저장할 때 끝 공백 지우기 같은 항목이 들어갈 자리예요.

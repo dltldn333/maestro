@@ -26,7 +26,7 @@ Maestro는 CLI 코딩 에이전트(Claude Code, Antigravity 등)를 프로젝트
 | [features/worktrees/](features/worktrees/) | 워크트리 만들기, 브랜치 선택, 외부 워크트리 |
 | [features/orchestration/](features/orchestration/) | 마에스트로 에이전트, 워커 계층, maestro CLI, 보관함·페르소나 |
 | [features/editor/](features/editor/) | 파일 탐색기, 변경사항, Monaco 편집기, 드래그 첨부 |
-| [features/ui/](features/ui/) | 창 프레임, 패널, 가운데 화면 탭, 테마·모션, 설정 창 |
+| [features/ui/](features/ui/) | 창 프레임, 패널, 가운데 화면 탭, 워크스페이스(분할·새 창), 테마·모션, 설정 창 |
 | [reference/](reference/) | Tauri 명령, 이벤트, 설정 키, 디스크 저장 위치 목록 |
 
 ## 문서 작성 규칙 (RAG용)

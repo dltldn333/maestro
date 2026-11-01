@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { WS } from "./store";
 import type { Approval, ApprovalChoice, Branch, ChatEvent, CliStatus, Repo, WorktreeInfo } from "./types";
 
 export const b64ToBytes = (b64: string) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
@@ -25,13 +26,24 @@ export const ipc = {
   send: (projectRoot: string, worktreePath: string, text: string, filesAttached: string[] = []) =>
     invoke<void>("send_message", { projectRoot, worktreePath, text, filesAttached }),
   stop: (worktreePath: string) => invoke<void>("stop_agent", { worktreePath }),
-  readTextFile: (base: string, rel: string) => invoke<{ text: string; mtime: number }>("read_text_file", { base, rel }),
+  // the shared workspace (workspace.rs): every window's layout and tab groups, committed against a version
+  wsGet: () => invoke<{ state: WS; version: number }>("ws_get"),
+  wsCommit: (state: WS, base: number) => invoke<{ ok: boolean; version: number; state: WS | null }>("ws_commit", { state, base }),
+  /** a file's unsaved editor text (null: none), kept where every window sees it */
+  wsDraftSet: (key: string, text: string | null) => invoke<void>("ws_draft_set", { key, text }),
+  wsDraftGet: (key: string) => invoke<string | null>("ws_draft_get", { key }),
+  /** a hidden pop-out window that finished loading reports in */
+  wsWindowReady: () => invoke<void>("ws_window_ready"),
+  /** a window for a pop-out (a warm one from the pool), then shown (at screen x, y if given) */
+  wsTakeWindow: () => invoke<string>("ws_take_window"),
+  wsShowWindow: (label: string, x?: number, y?: number) => invoke<void>("ws_show_window", { label, x, y }),
+  readTextFile:(base: string, rel: string) => invoke<{ text: string; mtime: number }>("read_text_file", { base, rel }),
   /** rejects with "CHANGED" when the file moved on since `expected` (unless force) */
   writeTextFile: (base: string, rel: string, text: string, expected: number, force = false) => invoke<number>("write_text_file", { base, rel, text, expected, force }),
   fileMtime: (base: string, rel: string) => invoke<number>("file_mtime", { base, rel }),
   fileAtHead: (base: string, rel: string) => invoke<string>("file_at_head", { base, rel }),
-  /** the project on screen, and after how many minutes away the others' idle agents stop (0 = never) */
-  setAway: (activeRoot: string | null, minutes: number) => invoke<void>("set_away", { activeRoot, minutes }),
+  /** the projects on screen in this window, and after how many minutes away the others' idle agents stop (0 = never) */
+  setAway: (activeRoots: string[], minutes: number) => invoke<void>("set_away", { activeRoots, minutes }),
   slashCommands: (worktreePath: string) =>
     invoke<Array<{ name: string; description: string; source: string }>>("list_slash_commands", { worktreePath }),
   cliStatus: () => invoke<CliStatus>("cli_status"),

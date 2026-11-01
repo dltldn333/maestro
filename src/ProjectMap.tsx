@@ -173,7 +173,6 @@ export function ProjectMap({ root, onNewAgent, onNewMaestro, onOpenSettings }: {
       <CanvasControls onOpenSettings={onOpenSettings} />
       <Panel position="top-left">
         <div className="canvas-tools">
-          <span className="crumb">{repoName}</span>
           <button className="primary" onClick={onNewAgent}>+ 워크트리</button>
           {maestro ? (
             <button title="마에스트로와 워커들이 일하는 캔버스" onClick={() => select(maestro.path, true)}>♛ 마에스트로 캔버스</button>

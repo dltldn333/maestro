@@ -3,7 +3,7 @@ title: 가운데 화면 탭 (미리보기 탭, 뒤로/앞으로)
 area: ui
 status: done
 files: [src/StageTabs.tsx, src/store.ts, src/App.tsx, src/CodeView.tsx, src/RightPanel.tsx, src/Sidebar.tsx, src/Canvas.tsx, src/ProjectMap.tsx, src/nodes/AgentNode.tsx, src/styles.css]
-related: [features/canvas/two-level-canvas.md, features/editor/code-editor.md, features/ui/side-panels.md]
+related: [features/canvas/two-level-canvas.md, features/editor/code-editor.md, features/ui/side-panels.md, features/ui/split-and-windows.md]
 updated: 2026-11-02
 ---
 
@@ -16,7 +16,10 @@ updated: 2026-11-02
 ## 동작
 
 **탭 종류**
-- **프로젝트 탭(첫 탭):** 폴더 아이콘과 저장소 이름이 강조색 글자와 옅은 강조색 바탕으로 보여서 다른 탭과 구분돼요. 닫을 수 없어요.
+- **프로젝트 탭(첫 탭):** 폴더 아이콘과 저장소 이름이 강조색 글자와 옅은 강조색 바탕으로 보여서 다른 탭과 구분돼요.
+  - ×(또는 휠 클릭)로 닫으면 그 묶음이 탭들과 함께 사라져요(메인 창의 마지막 묶음이면 프로젝트 없이 남아요). 탭들은 기억해 뒀다가 그 프로젝트를 다시 열면 닫기 전 그대로 되살려요. 마지막에 닫은 프로젝트 하나는 앱을 다시 켜도 기억해요(localStorage `maestro.lastClosedProject`).
+  - 저장하지 않은 파일이 있을 때만 확인을 물어요(그 편집은 사라져요).
+  - 끌면 그 묶음 전체가 옮겨져요(분할·합치기·창 밖 새 창). → [워크스페이스](split-and-windows.md)
 - **워크트리 탭:** 상태 점, 에이전트 로고, 이름이 보여요.
 - **파일 탭:** 파일 아이콘과 이름이 보이고, 변경 비교면 "비교"가 붙어요.
 - 탭은 프로젝트마다 따로예요.
@@ -47,10 +50,22 @@ updated: 2026-11-02
 - 열린 탭을 닫으면 바로 왼쪽 탭(없으면 오른쪽, 그것도 없으면 프로젝트)으로 가요.
 - 워크트리를 폐기하면 그 워크트리 탭과 그 안의 파일 탭이 함께 닫혀요.
 
+**순서 바꾸기**
+- 탭을 같은 탭 줄 위에서 좌우로 끌면 순서가 바뀌어요. 놓일 자리에 강조색 세로선이 보여요.
+- 다른 묶음의 탭 줄에 놓으면 그 자리에 끼워 넣어요(`dropTab`의 `index`, `placeAt`).
+- 프로젝트 탭은 항상 맨 앞이에요.
+
+**탭이 많을 때**
+- 탭은 이름을 줄여 가며 최소 88px까지 좁아져요(프로젝트 탭은 그대로).
+- 그래도 넘치면 탭 줄 양끝에 ‹ › 화살표가 생겨 2/3 화면씩 넘겨요. 마우스 휠로도 옆으로 넘기고, 열린 탭은 항상 보이는 자리로 스크롤돼요.
+
 **모양**
 - 탭 줄은 28px로 얇고, 탭은 각진 모양이에요. 탭 사이는 세로 선으로 나눠요.
 - 열린 탭은 위쪽에 2px 강조색 선이 있고, 바탕이 아래 화면과 같은 색이라 이어져 보여요.
 - 다른 탭에 갔다 와도 저장 안 한 편집은 그대로예요(파일 편집기를 숨긴 채 살려 둬요).
+
+**분할과 새 창**
+- 탭 줄은 탭 묶음마다 하나예요. 분할, 탭 옮기기, 새 창은 → [분할 화면과 새 창](split-and-windows.md)
 
 ## 구현
 
