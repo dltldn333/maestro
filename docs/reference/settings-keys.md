@@ -4,7 +4,7 @@ area: reference
 status: done
 files: [src/settings.ts, src/App.tsx, src/store.ts]
 related: [reference/storage-layout.md, architecture/overview.md]
-updated: 2026-11-01
+updated: 2026-11-02
 ---
 
 # 설정 키 목록
@@ -21,6 +21,9 @@ updated: 2026-11-01
 | `easing` | `"standard"` / `"smooth"` / `"bouncy"` / `"linear"` | `"smooth"` | 모든 UI 모션의 곡선. CSS 변수 `--mae-ease` |
 | `speed` | `"fast"` (120ms) / `"normal"` (220ms) / `"slow"` (360ms) | `"normal"` | 모션 길이. CSS 변수 `--mae-dur` |
 | `motion` | `boolean` | `true` | 모션 켜기. 끄거나 OS가 `prefers-reduced-motion: reduce`면 `--mae-dur`가 `0ms` |
+| `canvasBg` | `"dots" \| "lines" \| "cross" \| "none"` | `"dots"` | 캔버스 배경 무늬. 두 캔버스 모두 `CanvasBackground`로 그려요 |
+| `canvasGap` | `number` | `24` | 캔버스 무늬 간격(px): 12 / 24 / 48 / 96 |
+| `canvasAlpha` | `number` | `100` | 캔버스 무늬 진하기(%), 10–100 |
 | `panelStyle` | `"cards" \| "lines" \| "full"` | `"cards"` | 패널 구분: 분리 / 통합 / 와이드(여백 없음). `<html data-panels>`로 들어가요 |
 | `autoSave` | `boolean` | `false` | 코드 편집기 자동 저장(입력을 멈추고 1초 뒤). 설정 → 파일 |
 | `defaultAgent` | `string` | `"auto"` | 새 워크트리의 기본 에이전트 CLI id. `"auto"`는 쓸 수 있는 첫 에이전트 |

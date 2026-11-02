@@ -1,24 +1,41 @@
-import { useEffect, useMemo, useState } from "react";
-import { Handle, Position, type NodeProps } from "@xyflow/react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Spinner } from "../LogoMotion";
+import { Handle, Position, useReactFlow, type NodeProps } from "@xyflow/react";
 import { ipc } from "../ipc";
 import { StatusDot } from "../Sidebar";
 import { useApprovals, useStore, useWorktree } from "../store";
 import type { WorktreeCardNode } from "../types";
-import { fold, lastText, useAgentBoot, useTranscript } from "./AgentNode";
+import { fold, lastText, RefTags, useAgentBoot, useFold, useTranscript } from "./AgentNode";
 import { AgentLogo, agentLabel } from "../NewAgentDialog";
 import { useSettings } from "../settings";
 import { AttachAgent } from "./AttachAgent";
 
 // 13 × 11 grid cells
 export const CARD_SIZE = { width: 312, height: 264 };
+/** folded: just the header, the persona / document tags (two lines, when there are any) and the prompt box */
+export const CARD_COMPACT = { width: 312, height: 84 };
 
 const SIDES = { top: Position.Top, right: Position.Right, bottom: Position.Bottom, left: Position.Left };
 
 const STATUS: Record<string, string> ={ RUNNING: "작업 중", IDLE: "대기", TERMINATED: "꺼짐" };
 
 /** Project canvas: what one worktree is up to, with a quick prompt box. Double-click opens it. */
-export function WorktreeCard({ data }: NodeProps<WorktreeCardNode>) {
+export function WorktreeCard({ id, data }: NodeProps<WorktreeCardNode>) {
   const wt = useWorktree(data.worktreePath);
+  const tags = !!wt && wt.personas.length + wt.docs.length > 0;
+  const setFolded = useFold(id, (compact) => ({ size: compact ? CARD_COMPACT : CARD_SIZE, data: { ...data, compact } }));
+  const { updateNode } = useReactFlow();
+  // folded, the card is as tall as its content (one header line, or two with tags): the block follows it
+  const box = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!data.compact || !el) return;
+    const fit = () => updateNode(id, (n) => (n.height === el.offsetHeight ? {} : { height: el.offsetHeight }));
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [data.compact, tags]);
   const waiting = useApprovals(data.worktreePath).length > 0;
   const events = useTranscript(wt?.root ?? "", data.worktreePath);
   const last = useMemo(() => lastText(fold(events)), [events]);
@@ -53,7 +70,7 @@ export function WorktreeCard({ data }: NodeProps<WorktreeCardNode>) {
 
   if (!wt) return null;
   return (
-    <div className="node wt-card" data-waiting={waiting || undefined} data-maestro={wt.isMaestro || undefined}>
+    <div ref={box} className="node wt-card" data-compact={data.compact || undefined} data-waiting={waiting || undefined} data-maestro={wt.isMaestro || undefined}>
       {/* connection points on every side: lines go Maestro ↔ worker (Canvas uses loose connection mode) */}
       {(["top", "right", "bottom", "left"] as const).map((side) => (
         <Handle key={side} id={side} type="source" position={SIDES[side]} className="wt-handle" />
@@ -66,8 +83,22 @@ export function WorktreeCard({ data }: NodeProps<WorktreeCardNode>) {
         <span className="spacer" />
         {wt.external && <span className="ext-badge" title="Maestro 밖에서 만든 워크트리 (폐기해도 폴더는 그대로)">외부</span>}
         <span className="agent-tag muted small"><AgentLogo id={wt.adapterId} size={14} />{agentLabel(wt.adapterId)}</span>
+        {waiting && data.compact && <span className="wt-card-waiting small">승인 대기</span>}
+        <button
+          className="icon nodrag wt-card-fold"
+          title={data.compact ? "펼치기" : "작게 접기"}
+          aria-label={data.compact ? "펼치기" : "작게 접기"}
+          onClick={() => setFolded(!data.compact)}
+          onDoubleClick={(e) => e.stopPropagation()}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d={data.compact ? "M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" : "M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"} />
+          </svg>
+        </button>
+        {/* folded, the tags sit in the name area, under the name */}
+        {data.compact && <RefTags wt={wt} />}
       </header>
-      <div className="wt-card-body">
+      {!data.compact && <div className="wt-card-body">
         {wt.description && <div className="wt-card-desc muted small">{wt.description}</div>}
         {!!wt.personas.length && (
           <div className="wt-card-personas">
@@ -82,7 +113,7 @@ export function WorktreeCard({ data }: NodeProps<WorktreeCardNode>) {
           {!wt.adapterId ? (
             <AttachAgent wt={wt} compact />
           ) : boot === "starting" ? (
-            <span className="muted"><span className="spinner" /> {agentLabel(wt.adapterId)} 준비 중…</span>
+            <span className="muted"><Spinner /> {agentLabel(wt.adapterId)} 준비 중…</span>
           ) : boot === "trust" ? (
             <span>
               처음 여는 폴더라 신뢰 확인이 필요해요.{" "}
@@ -97,12 +128,12 @@ export function WorktreeCard({ data }: NodeProps<WorktreeCardNode>) {
           ) : summary ? (
             <span title={last}>{summary}</span>
           ) : summarizing ? (
-            <span className="muted"><span className="spinner" /> 답변 요약 중…</span>
+            <span className="muted"><Spinner /> 답변 요약 중…</span>
           ) : (
             last || <span className="muted">아직 대화가 없어요</span>
           )}
         </div>
-      </div>
+      </div>}
       {wt.adapterId && <QuickPrompt root={wt.root} path={wt.path} ready={ready} />}
     </div>
   );

@@ -14,12 +14,14 @@ pub const ROUTES: &[(&str, &str)] = &[
     ("worktree list", "이 프로젝트의 워크트리와 에이전트 상태"),
     ("worktree create", "--name 이름 [--prompt 첫 지시] [--agent claude-code|antigravity] [--model 모델] [--description 설명] [--branch 새 브랜치 --base 기준 | --checkout 기존 브랜치]"),
     ("branch list", "브랜치 목록 (사용 중 여부)과 마에스트로 기준 브랜치"),
-    ("library list", "이 프로젝트 보관함의 마크다운 (페르소나 포함): 참조로 걸 수 있는 문서"),
+    ("library list", "Maestro 문서 (페르소나, 지침, 문서 등 분류별 마크다운): 참조로 걸 수 있는 문서"),
     ("ref list", "[--to 워크트리]  (그 에이전트가 참조하는 문서, 기본은 나)"),
     ("ref add", "--path 파일.md [--to 워크트리]  (참조 연결: 그 에이전트 캔버스에 마크다운 블록이 생겨요)"),
     ("ref remove", "--path 파일.md [--to 워크트리]  (참조 해제)"),
     ("send", "--to 워크트리 --text 내용  (다른 에이전트에게 지시 보내기)"),
     ("read", "[--to 워크트리]  (그 에이전트의 상태와 마지막 답변, 기본은 나)"),
+    ("selection", "사용자가 내 캔버스에서 지금 선택한 블록들 (에이전트, 문서, 프롬프트 블록, 그린 구조: 블록·영역·화살표)"),
+    ("draw", "--file 구조.json  (내 캔버스에 구조를 그려요. {\"areas\":[{\"title\",\"in\"?}], \"blocks\":[{\"title\",\"body\"?,\"area\"?}], \"arrows\":[{\"from\",\"to\",\"label\"?}]}. 같은 이름은 고쳐 써요)"),
 ];
 
 pub fn handle(app: &AppHandle, route: &str, caller: &str, input: &Value) -> Result<Value, String> {
@@ -85,7 +87,7 @@ pub fn handle(app: &AppHandle, route: &str, caller: &str, input: &Value) -> Resu
             Ok(card(&info))
         }
         "branch/list" => Ok(json!({ "base": base_branch(app, &root), "branches": worktree::branches(&root)? })),
-        "library/list" => Ok(json!(library_folders(app, &root)?)),
+        "library/list" => Ok(json!(library_folders(app)?)),
         "ref/list" => {
             let to = match arg("to").as_str() {
                 "" => me,
@@ -117,6 +119,17 @@ pub fn handle(app: &AppHandle, route: &str, caller: &str, input: &Value) -> Resu
                 key => target(app, &state, &root, key)?,
             };
             Ok(json!({ "worktree": card(&to), "lastAnswer": last_answer(app, &root, &to.path) }))
+        }
+        "selection" => {
+            let picked = state.selection.lock().unwrap().get(&me.path.to_lowercase()).cloned();
+            Ok(json!({ "selected": picked.unwrap_or_else(|| json!([])) }))
+        }
+        "draw" => {
+            let spec = drawing(&me.path, &arg("file"))?;
+            let counts = json!({ "areas": spec["areas"].as_array().map_or(0, |a| a.len()), "blocks": spec["blocks"].as_array().map_or(0, |a| a.len()), "arrows": spec["arrows"].as_array().map_or(0, |a| a.len()) });
+            state.drawings.lock().unwrap().entry(me.path.to_lowercase()).or_default().push(spec);
+            let _ = app.emit("maestro://draw", &me.path); // my canvas, if it's open, takes it now; otherwise when it opens
+            Ok(json!({ "drawn": counts }))
         }
         _ => Err(format!("모르는 명령: {}. `maestro --help`를 보세요.", route.replace('/', " "))),
     }
@@ -169,6 +182,47 @@ fn md_path(caller: &str, path: &str, must_exist: bool) -> Result<String, String>
         }
     }
     Ok(worktree::norm(&p))
+}
+
+/// A structure spec from `--file` (relative to the caller's worktree): areas, blocks and arrows, each named by
+/// `title`. Checked here so a typo comes back to the agent instead of drawing half a picture.
+fn drawing(caller: &str, file: &str) -> Result<Value, String> {
+    if file.is_empty() {
+        return Err("--file 로 구조 JSON 파일을 지정해 주세요 (`maestro --help`의 draw 형식)".into());
+    }
+    let p = Path::new(file);
+    let p = if p.is_absolute() { p.to_path_buf() } else { Path::new(caller).join(p) };
+    let text = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", worktree::norm(&p)))?;
+    let spec: Value = serde_json::from_str(&text).map_err(|e| format!("구조 JSON을 읽지 못했어요: {e}"))?;
+    let list = |k: &str| spec[k].as_array().cloned().unwrap_or_default();
+    let (areas, blocks, arrows) = (list("areas"), list("blocks"), list("arrows"));
+    if areas.is_empty() && blocks.is_empty() {
+        return Err("areas나 blocks가 하나는 있어야 해요".into());
+    }
+    let title = |v: &Value| v["title"].as_str().map(str::trim).unwrap_or("").to_string();
+    let names: Vec<String> = areas.iter().chain(&blocks).map(title).collect();
+    if let Some(i) = names.iter().position(|n| n.is_empty()) {
+        return Err(format!("{}번째 영역/블록에 title이 없어요", i + 1));
+    }
+    let known = |n: &str| names.iter().any(|x| x == n);
+    for a in &arrows {
+        for end in ["from", "to"] {
+            let n = a[end].as_str().unwrap_or("");
+            if !known(n) {
+                return Err(format!("화살표의 {end} '{n}'이(가) 이 파일의 영역/블록 이름에 없어요"));
+            }
+        }
+    }
+    for b in areas.iter().chain(&blocks) {
+        for k in ["area", "in"] {
+            if let Some(n) = b[k].as_str().filter(|n| !n.is_empty()) {
+                if !areas.iter().any(|a| title(a) == n) {
+                    return Err(format!("'{}'의 {k} '{n}'이(가) 영역 이름에 없어요", title(b)));
+                }
+            }
+        }
+    }
+    Ok(json!({ "areas": areas, "blocks": blocks, "arrows": arrows }))
 }
 
 fn parent_of<'a>(all: &'a [WorktreeInfo], path: &str) -> Option<&'a WorktreeInfo> {
@@ -233,6 +287,23 @@ fn last_answer(app: &AppHandle, root: &str, path: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drawing_checks_names() {
+        let dir = std::env::temp_dir().join(format!("maestro-draw-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let caller = worktree::norm(&dir);
+        let put = |s: &str| std::fs::write(dir.join("s.json"), s).unwrap();
+        put(r#"{"areas":[{"title":"서버"}],"blocks":[{"title":"API","area":"서버"},{"title":"화면"}],"arrows":[{"from":"화면","to":"API","label":"REST"}]}"#);
+        let ok = drawing(&caller, "s.json").unwrap();
+        assert_eq!(ok["blocks"].as_array().unwrap().len(), 2);
+        put(r#"{"blocks":[{"title":"화면"}],"arrows":[{"from":"화면","to":"없음"}]}"#);
+        assert!(drawing(&caller, "s.json").unwrap_err().contains("없음"));
+        put(r#"{"blocks":[{"title":"API","area":"서버"}]}"#);
+        assert!(drawing(&caller, "s.json").unwrap_err().contains("서버"));
+        assert!(drawing(&caller, "").is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn md_path_resolves_and_checks() {

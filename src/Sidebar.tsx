@@ -1,12 +1,13 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { ipc } from "./ipc";
 import { GearIcon } from "./SettingsDialog";
 import { AgentLogo } from "./NewAgentDialog";
-import { useApprovals, useStore, type Worktree } from "./store";
+import { SYSTEM_ROOT, useApprovals, useStore, type SystemView, type Worktree } from "./store";
 import type { Repo } from "./types";
 
-// idle and off (often just stopped while away, it resumes when opened) need no words: the dot says enough
-const STATUS_LABEL: Record<string, string> = { RUNNING: "작업 중" };
+// the dot says which state an agent is in (it pulses while working); only a waiting approval gets words
+const STATUS_LABEL: Record<string, string> = {};
 
 export function StatusDot({ w }: { w: Worktree }) {
   const waiting = useApprovals(w.path).length > 0;
@@ -40,15 +41,56 @@ function treeRows(wts: Worktree[]) {
   return rows;
 }
 
+const SHUT_KEY = "maestro.projectsShut";
+
+// outlines after Lucide (ISC): "file-text" (문서), "book-open" (플레이북)
+const DOCS_ICON = "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M16 13H8M16 17H8M10 9H8";
+const BOOKS_ICON = "M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2zM22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z";
+
 export function Sidebar({ onNewWorktree, onOpenSettings }: { onNewWorktree: (repo: Repo) => void; onOpenSettings: () => void }) {
   const { ready, repos, activeRoot, worktrees, selectedPath, addRepo, removeRepo, setActive, openProject, select, setError, approvals } = useStore();
   const waitingPaths = new Set(approvals.map((a) => a.worktreePath.toLowerCase()));
   const clickTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  // the board the focused group shows, while it's on the system project (its row is lit)
+  const sys = useStore((s) => (s.activeRoot === SYSTEM_ROOT ? s.systemView : undefined));
+  // the project list folded away (kept across restarts)
+  const [shut, setShutState] = useState(() => {
+    try {
+      return localStorage.getItem(SHUT_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const setShut = (v: boolean) => {
+    setShutState(v);
+    try {
+      localStorage.setItem(SHUT_KEY, v ? "1" : "0");
+    } catch {}
+  };
+  const navRow = (view: SystemView, label: string, icon: string, hint: string) => (
+    <button className="sb-nav" data-on={sys === view || undefined} title={hint} onClick={() => useStore.getState().openSystem(view)}>
+      <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+        <path d={icon} />
+      </svg>
+      {label}
+    </button>
+  );
 
   const pickRepo = async () => {
     try {
-      const dir = await open({ directory: true, title: "Git 저장소 선택" });
-      if (typeof dir === "string") await addRepo(dir);
+      const dir = await open({ directory: true, title: "프로젝트 폴더 선택" });
+      if (typeof dir !== "string") return;
+      // worktrees need a git repo with at least one commit: offer to set that up rather than refuse the folder
+      const state = await ipc.repoState(dir);
+      if (state !== "ready") {
+        const ask =
+          state === "none"
+            ? `'${dir}'는 Git 저장소가 아니에요.\n\ngit init을 하고 지금 있는 파일로 첫 커밋을 만들어 프로젝트로 추가할까요?`
+            : `'${dir}' 저장소에 아직 커밋이 없어요. 워커가 갈라져 나올 첫 커밋이 필요해요.\n\n지금 있는 파일로 첫 커밋을 만들까요?`;
+        if (!confirm(ask)) return;
+        await ipc.initRepo(dir);
+      }
+      await addRepo(dir);
     } catch (e) {
       setError(e);
     }
@@ -56,10 +98,33 @@ export function Sidebar({ onNewWorktree, onOpenSettings }: { onNewWorktree: (rep
 
   return (
     <aside className="sidebar">
-      <div className="sb-head">
-        <span>저장소</span>
-        <button className="icon" title="저장소 추가" onClick={pickRepo}>+</button>
+      <nav className="sb-navs">
+        {navRow("docs", "문서", DOCS_ICON, "모든 프로젝트가 같이 쓰는 문서 (페르소나, 지침, PRD, 디자인, RAG) · 시스템 탭에 열려요")}
+        {navRow("playbooks", "플레이북", BOOKS_ICON, "마에스트로가 워커들을 부리는 절차 · 시스템 탭에 열려요")}
+      </nav>
+      <div className="sb-section" onClick={() => setShut(!shut)} title={shut ? "펼치기" : "접기"}>
+        <span>프로젝트</span>
+        <span className="docs-caret" data-open={!shut || undefined} aria-hidden>
+          <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="m9 18 6-6-6-6" />
+          </svg>
+        </span>
+        <span className="spacer" />
+        <button
+          className="icon"
+          title="저장소 추가"
+          aria-label="저장소 추가"
+          onClick={(e) => {
+            e.stopPropagation();
+            void pickRepo();
+          }}
+        >
+          +
+        </button>
       </div>
+      {shut ? (
+        <div className="sb-body" />
+      ) : (
       <div className="sb-body">
         {repos.map((r) => {
           const wts = worktrees.filter((w) => w.root === r.root);
@@ -146,6 +211,7 @@ export function Sidebar({ onNewWorktree, onOpenSettings }: { onNewWorktree: (rep
           </div>
         )}
       </div>
+      )}
       <div className="sb-foot">
         <button className="sb-settings" onClick={onOpenSettings}>
           <GearIcon />

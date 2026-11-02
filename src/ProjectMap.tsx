@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
+import { Spinner } from "./LogoMotion";
 import { createPortal } from "react-dom";
 import { ipc } from "./ipc";
-import { Background, Handle, Panel, Position, ReactFlow, useEdgesState, useNodesState, useReactFlow, type Edge, type Node, type NodeProps } from "@xyflow/react";
+import { Handle, Panel, Position, ReactFlow, useEdgesState, useNodesState, useReactFlow, type Edge, type Node, type NodeProps } from "@xyflow/react";
 import { useShallow } from "zustand/react/shallow";
 import { ARROW, CanvasControls, Guide, MIN_ZOOM, treeLayout } from "./Canvas";
-import { GRID } from "./nodes/AgentNode";
+import { CanvasBackground } from "./nodes/AgentNode";
 import { AgentLogo, agentLabel } from "./NewAgentDialog";
 import { StatusDot } from "./Sidebar";
 import { useStore, useWorktree, type Worktree } from "./store";
@@ -69,7 +70,7 @@ function StructureCard({ data }: NodeProps<StructNode>) {
 function RefPicker({ wt, onClose }: { wt: Worktree; onClose: () => void }) {
   const setError = useStore((s) => s.setError);
   const [folders, setFolders] = useState<Folder[] | null>(null);
-  useEffect(() => void ipc.libraryList(wt.root).then(setFolders).catch(setError), [wt.root]);
+  useEffect(() => void ipc.libraryList().then(setFolders).catch(setError), []);
   const on = (path: string) => wt.refs.some((r) => r.toLowerCase() === path.toLowerCase());
   const toggle = (path: string) =>
     ipc.setRef(wt.root, wt.path, path, !on(path)).then(() => useStore.getState().refreshWorktrees(wt.root)).catch(setError);
@@ -89,7 +90,7 @@ function RefPicker({ wt, onClose }: { wt: Worktree; onClose: () => void }) {
         <h3>참조 문서 · {wt.name}</h3>
         <p className="muted small">고르면 이 에이전트의 캔버스에 마크다운 블록이 생기고 참조로 연결돼요. 페르소나는 그 역할을 맡게 해요.</p>
         <div className="ref-list">
-          {!folders && <span className="muted"><span className="spinner" /> 읽는 중…</span>}
+          {!folders && <span className="muted"><Spinner /> 읽는 중…</span>}
           {folders?.map((f) => (
             <div key={f.folder}>
               <div className="ref-folder muted small">{f.persona ? "♟ 페르소나" : f.folder.split(/[\\/]/).pop()}</div>
@@ -99,11 +100,11 @@ function RefPicker({ wt, onClose }: { wt: Worktree; onClose: () => void }) {
           ))}
           {others.length > 0 && (
             <div>
-              <div className="ref-folder muted small">보관함 밖의 파일</div>
+              <div className="ref-folder muted small">프로젝트 파일 (파일 트리에서 끌어온 것)</div>
               {others.map((p) => row(p, p.split("/").pop() ?? p, p))}
             </div>
           )}
-          {folders && folders.length <= 1 && <p className="muted small">마크다운 폴더는 에이전트 캔버스의 보관함에서 등록해요.</p>}
+          {folders && folders.every((f) => !f.files.length) && <p className="muted small">문서는 왼쪽 사이드바의 문서 탭에서 만들거나 가져와요.</p>}
         </div>
         <div className="modal-actions">
           <button className="primary" autoFocus onClick={onClose}>닫기</button>
@@ -165,11 +166,13 @@ export function ProjectMap({ root, onNewAgent, onNewMaestro, onOpenSettings }: {
       minZoom={MIN_ZOOM}
       zoomOnScroll={false}
       panOnScroll
+      panOnDrag={[0, 1]}
+      onMouseDownCapture={(e) => e.button === 1 && e.preventDefault()}
       zoomActivationKeyCode="Control"
       colorMode={isLightTheme(theme) ? "light" : "dark"}
       proOptions={{ hideAttribution: true }}
     >
-      <Background gap={GRID} />
+      <CanvasBackground />
       <CanvasControls onOpenSettings={onOpenSettings} />
       <Panel position="top-left">
         <div className="canvas-tools">

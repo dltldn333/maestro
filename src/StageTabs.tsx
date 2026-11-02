@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { AgentLogo } from "./NewAgentDialog";
 import { StatusDot } from "./Sidebar";
-import { activeTab, fileKey, groupView, isActiveTab, navTarget, useStore, type Group, type StageTab } from "./store";
+import { activeTab, fileKey, groupView, isActiveTab, navTarget, SYSTEM_ROOT, useStore, type Group, type StageTab } from "./store";
 import { dropOn, TAB_MIME, type TabDrag } from "./Workspace";
 
 // outlines after Lucide (ISC): "file", "folder" (the project), "chevron-left/right", "columns-2", "external-link"
 const FILE_ICON = "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6";
 const PROJECT_ICON = "M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z";
 const SPLIT_ICON = "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM12 3v18";
+// "layout-grid" (the system project: Maestro's documents and playbooks)
+const SYSTEM_ICON = "M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z";
 const WINDOW_ICON = "M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6";
 
 function Icon({ d, size = 13 }: { d: string; size?: number }) {
@@ -73,6 +75,8 @@ export function StageTabs({ group, focused, showNav, inWindow }: { group: Group;
   const { select, openEditor, closeTab, pinTab, goNav, dropTab, splitEmpty, popOutTab, popOutGroup } = useStore.getState();
   const view = groupView(group);
   const onScreen = activeTab(view);
+  // the system project's tab reads like a project's: its own name and icon
+  const home = root === SYSTEM_ROOT ? { name: "시스템", root: "Maestro 문서와 플레이북 (~/.maestro)" } : repo;
 
   useEffect(() => {
     if (!menu) return;
@@ -84,8 +88,6 @@ export function StageTabs({ group, focused, showNav, inWindow }: { group: Group;
       window.removeEventListener("blur", off);
     };
   }, [menu]);
-  if (!repo || !root) return null;
-
   // the group's mousedown already focused it, so select / openEditor act on this group
   const go = (t: StageTab | null) => {
     if (t?.kind === "file") return openEditor({ base: t.base, rel: t.rel, diff: t.diff }, !t.preview);
@@ -99,13 +101,14 @@ export function StageTabs({ group, focused, showNav, inWindow }: { group: Group;
   // As the only group its tabs are remembered instead, so it only asks about unsaved edits.
   const closeHome = () => {
     // its tabs are remembered (they come back when the project is opened again); only unsaved edits would be lost
+    if (!home) return;
     const unsaved = group.tabs.filter((t) => t.kind === "file" && dirtyFiles.includes(fileKey(t.base, t.rel))).length;
-    if (unsaved && !confirm(`'${repo.name}' 프로젝트 탭을 닫아요. 탭 ${group.tabs.length}개는 기억해 두었다가 다시 열면 되살려요.
+    if (unsaved && !confirm(`'${home.name}' 탭을 닫아요. 탭 ${group.tabs.length}개는 기억해 두었다가 다시 열면 되살려요.
 저장하지 않은 파일 ${unsaved}개의 편집은 사라져요.
 닫을까요?`)) return;
     useStore.getState().closeProject(group.id);
   };
-  const split = (t: StageTab | null, side: "right" | "bottom") => (t ? dropTab(t, root, group.id, group.id, side, true) : splitEmpty(group.id, side));
+  const split = (t: StageTab | null, side: "right" | "bottom") => (t && root ? dropTab(t, root, group.id, group.id, side, true) : splitEmpty(group.id, side));
   // dragging a tab (or the project tab, carrying its group): where it is, and a window of its own if let go outside
   const dragProps = (data: TabDrag, outside: (at: { x: number; y: number }) => void) => ({
     draggable: true,
@@ -157,28 +160,28 @@ export function StageTabs({ group, focused, showNav, inWindow }: { group: Group;
           dropOn(raw, group.id, "center", at);
         }}
       >
-        <div
+        {home && root && <div
           className="stage-tab home"
           role="tab"
           aria-selected={!onScreen}
           data-on={!onScreen || undefined}
-          title={`${repo.root}\n끌면 이 묶음의 탭이 모두 함께 옮겨져요`}
+          title={`${home.root}\n끌면 이 묶음의 탭이 모두 함께 옮겨져요`}
           onClick={() => go(null)}
           onAuxClick={(e) => e.button === 1 && closeHome()}
           {...dragProps({ group: group.id }, (at) => void popOutGroup(group.id, at))}
         >
-          <Icon d={PROJECT_ICON} />
-          <span className="ellipsis">{repo.name}</span>
+          <Icon d={root === SYSTEM_ROOT ? SYSTEM_ICON : PROJECT_ICON} />
+          <span className="ellipsis">{home.name}</span>
           <button
             className="stage-tab-x"
             title="프로젝트 닫기 (탭들은 기억해 뒀다가 다시 열면 되살려요)"
-            aria-label={`${repo.name} 닫기`}
+            aria-label={`${home.name} 닫기`}
             onClick={(e) => {
               e.stopPropagation();
               closeHome();
             }}
           />
-        </div>
+        </div>}
         {group.tabs.map((t, n) => {
           const on = isActiveTab(t, view);
           const wt = t.kind === "wt" ? worktrees.find((w) => w.path.toLowerCase() === t.path.toLowerCase()) : undefined;
@@ -196,7 +199,7 @@ export function StageTabs({ group, focused, showNav, inWindow }: { group: Group;
               data-index={n}
               data-insert={dropAt === n ? "before" : dropAt === group.tabs.length && n === group.tabs.length - 1 ? "after" : undefined}
               title={`${t.kind === "wt" ? `${wt!.name}\n브랜치 ${wt!.branch}` : `${t.rel}${t.diff ? " (변경 비교)" : ""}`}${t.preview ? "\n미리보기: 더블클릭하면 탭을 고정해요" : ""}`}
-              {...dragProps({ tab: t, root, from: group.id }, (at) => void popOutTab(t, group.id, at))}
+              {...(root ? dragProps({ tab: t, root, from: group.id }, (at) => void popOutTab(t, group.id, at)) : {})}
               onClick={() => go(t)}
               onDoubleClick={() => pinTab(t, group.id)}
               // middle click closes, as in browsers and editors

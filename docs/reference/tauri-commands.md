@@ -4,7 +4,7 @@ area: reference
 status: done
 files: [src-tauri/src/main.rs, src/ipc.ts, src-tauri/src/worktree.rs, src-tauri/src/agent.rs, src-tauri/src/approval.rs, src-tauri/src/cli.rs, src-tauri/src/commands.rs, src-tauri/src/library.rs, src-tauri/src/antigravity.rs]
 related: [architecture/overview.md, reference/events.md, reference/storage-layout.md]
-updated: 2026-11-01
+updated: 2026-11-03
 ---
 
 # Tauri 명령 목록
@@ -21,6 +21,8 @@ updated: 2026-11-01
 |---|---|---|---|---|
 | `list_repos` | `listRepos` | 없음 | `RepoInfo[]` (`{ root, name, defaultBranch }`) | `~/.maestro/repos.json`에 등록된 저장소 목록 |
 | `add_repo` | `addRepo` | `path` | `RepoInfo` | `git rev-parse --show-toplevel`로 저장소 루트를 찾아 `repos.json`에 추가(이미 있으면 그대로) |
+| `repo_state` | `repoState` | `path` | `"ready" \| "empty" \| "none"` | 고른 폴더가 그대로 프로젝트가 될 수 있는지: 커밋 있음 / 저장소지만 커밋 없음 / 저장소 아님 |
+| `init_repo` | `initRepo` | `path` | `()` | 저장소가 아니면 `git init -b main`, 커밋이 없으면 있는 파일로 첫 커밋(`Initial commit`, git 사용자 정보가 없으면 Maestro 이름으로). 사이드바가 물어본 뒤에만 불러요 |
 | `remove_repo` | `removeRepo` | `root` | 없음 | `repos.json`에서만 빼요. 디스크의 워크트리는 건드리지 않아요 |
 | `list_worktrees` | `listWorktrees` | `projectRoot` | `WorktreeInfo[]` | 마에스트로(있으면 맨 앞) + 저장소의 모든 연결 워크트리(외부 포함) |
 | `list_branches` | `listBranches` | `projectRoot` | `Branch[]` (`{ name, remote, inUse }`) | 로컬 브랜치, 그다음 원격에만 있는 브랜치(짧은 이름) |
@@ -86,12 +88,16 @@ updated: 2026-11-01
 
 `key`는 마에스트로 캔버스면 `overview`, 워크트리 캔버스면 워크트리 폴더 이름이에요(`Canvas.tsx`). 영숫자·`-`·`_` 밖의 문자는 `_`로 바뀌어요.
 
-## 보관함·참조
+## 문서·참조
 
 | Rust 명령 | `ipc.*` | 인자 | 반환 | 용도 |
 |---|---|---|---|---|
-| `library_list` | `libraryList` | `projectRoot` | `{ folder, persona, files: { path, title }[] }[]` | 페르소나 폴더(맨 앞, `persona: true`) + 프로젝트에 등록된 Markdown 폴더 |
-| `library_set` | `librarySet` | `projectRoot`, `folders` | 없음 | 등록 폴더 목록을 `library.json`에 저장 |
+| `library_list` | `libraryList` | 없음 | `{ folder, persona, files: { path, title }[] }[]` | 페르소나 폴더(맨 앞, `persona: true`) + 문서 분류 폴더 |
+| `playbook_list` | `playbookList` | 없음 | `{ folder, persona, files }[]` (폴더 하나) | 플레이북 목록 |
+| `docs_create` | `docsCreate` | `folder`, `name` | `string` (파일 경로) | 페르소나·분류 폴더에 `<name>.md` 새로 만들기 |
+| `docs_import` | `docsImport` | `folder`, `files` | 없음 | 바깥 마크다운을 그 폴더로 복사(겹치면 `-2`…) |
+| `docs_delete` | `docsDelete` | `path` | 없음 | 페르소나·분류 폴더의 문서 하나 지우기 |
+| `docs_category` | `docsCategory` | `name` | 없음 | 새 분류 폴더 |
 | `persona_create` | `personaCreate` | `name` | `string` (파일 경로) | `~/.maestro/personas/<name>.md` 새로 만들기. 같은 이름이 있으면 에러 |
 | `md_title` | `mdTitle` | `path` | `string` | Markdown 파일의 맨 위 `#` 제목(파일 트리에서 끌어 놓을 때) |
 | `set_ref` | `setRef` | `projectRoot`, `worktree`, `md`, `on` | 없음 | 에이전트 meta의 `refs`에 Markdown 참조 추가/제거. `worktree`가 `""`이고 `on=false`면 모든 에이전트에서 제거. 페르소나면 실행 중인 에이전트에 바로 안내 메시지를 보내요 |

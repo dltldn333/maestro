@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { AGENTS, AgentLogo, PERMISSIONS, agentLabel, agentUsable } from "./NewAgentDialog";
 import { MODEL_CHOICES } from "./slashCommands";
-import { AWAY_CHOICES, EASINGS, PANEL_STYLES, SPEEDS, THEMES, useSettings } from "./settings";
+import { AWAY_CHOICES, EASINGS, CANVAS_BGS, CANVAS_GAPS, PANEL_STYLES, SPEEDS, THEMES, useSettings } from "./settings";
 import { ipc } from "./ipc";
 import { listen } from "@tauri-apps/api/event";
 import { XTerm } from "./nodes/XTerm";
@@ -321,6 +321,45 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                     {Object.entries(PANEL_STYLES).map(([id, p]) => (
                       <button key={id} data-on={id === s.panelStyle || undefined} onClick={() => s.set({ panelStyle: id as keyof typeof PANEL_STYLES })}>{p.label}</button>
                     ))}
+                  </div>
+                </div>
+              </section>
+
+              <h4>캔버스 배경</h4>
+              <section className="set-card">
+                <div className="set-row">
+                  <div>
+                    <div>무늬</div>
+                    <div className="muted small">{(CANVAS_BGS[s.canvasBg] ?? CANVAS_BGS.dots).hint}</div>
+                  </div>
+                  <div className="seg">
+                    {Object.entries(CANVAS_BGS).map(([id, b]) => (
+                      <button key={id} data-on={id === (s.canvasBg ?? "dots") || undefined} onClick={() => s.set({ canvasBg: id as keyof typeof CANVAS_BGS })}>{b.label}</button>
+                    ))}
+                  </div>
+                </div>
+                <div className="set-row">
+                  <div>간격</div>
+                  <div className="seg">
+                    {CANVAS_GAPS.map((g) => (
+                      <button key={g.px} disabled={s.canvasBg === "none"} data-on={g.px === (s.canvasGap ?? 24) || undefined} title={`${g.px}px`} onClick={() => s.set({ canvasGap: g.px })}>{g.label}</button>
+                    ))}
+                  </div>
+                </div>
+                <div className="set-row">
+                  <div>진하기</div>
+                  <div className="set-range">
+                    <input
+                      type="range"
+                      aria-label="무늬 진하기"
+                      min={10}
+                      max={100}
+                      step={5}
+                      disabled={s.canvasBg === "none"}
+                      value={s.canvasAlpha ?? 100}
+                      onChange={(e) => s.set({ canvasAlpha: Number(e.target.value) })}
+                    />
+                    <span className="muted small">{s.canvasAlpha ?? 100}%</span>
                   </div>
                 </div>
               </section>

@@ -1,13 +1,26 @@
 import { AgentPanel } from "./nodes/AgentNode";
 import { useSettings } from "./settings";
 
-/** Full screen ↔ canvas, inside a worktree: one icon button showing where a click takes you. */
-export function LayoutToggle() {
-  const { agentLayout, set } = useSettings();
-  const full = agentLayout === "full";
+/**
+ * Full screen ↔ canvas for one worktree tab: one icon button showing where a click takes you. Each tab keeps its
+ * own; the last one picked (settings `agentLayout`) is what new tabs open with.
+ */
+export function LayoutToggle({ value, onChange }: { value: "full" | "canvas"; onChange: (v: "full" | "canvas") => void }) {
+  const set = useSettings((s) => s.set);
+  const full = value === "full";
   const label = full ? "캔버스로 보기" : "전체 화면으로 보기";
   return (
-    <button className="icon layout-toggle" aria-pressed={full} title={label} aria-label={label} onClick={() => set({ agentLayout: full ? "canvas" : "full" })}>
+    <button
+      className="icon layout-toggle"
+      aria-pressed={full}
+      title={label}
+      aria-label={label}
+      onClick={() => {
+        const next = full ? "canvas" : "full";
+        onChange(next);
+        set({ agentLayout: next });
+      }}
+    >
       {/* Lucide "workflow" / "maximize-2" (ISC) */}
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
         {full ? (
@@ -25,7 +38,7 @@ export function LayoutToggle() {
 }
 
 /** The default worktree view: its agent filling the stage, like the Claude Code app. */
-export function AgentFull({ path }: { path: string }) {
+export function AgentFull({ path, toggle }: { path: string; toggle: React.ReactNode }) {
   const { fullView, set } = useSettings();
-  return <AgentPanel className="agent-full" path={path} view={fullView} onView={(v) => set({ fullView: v })} extra={<LayoutToggle />} />;
+  return <AgentPanel className="agent-full" path={path} view={fullView} onView={(v) => set({ fullView: v })} extra={toggle} />;
 }

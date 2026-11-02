@@ -1,5 +1,7 @@
-//! The canvas library (보관함): folders registered per project whose Markdown files can be dragged
-//! onto a canvas as blocks. A block shows only the file's top `#` heading.
+//! The documents Maestro keeps for every project (the sidebar's 문서 tab): the personas, plus
+//! `~/.maestro/library/<category>/` folders of shared Markdown (guidelines, PRD templates, …). Dragged onto a
+//! canvas they become Markdown blocks; linked to an agent they become its references. A project's own files
+//! come from the file tree instead, so nothing here is per project.
 
 use serde::Serialize;
 use std::path::Path;
@@ -14,23 +16,52 @@ pub fn is_persona(home: &Path, md: &str) -> bool {
     md.replace('\\', "/").to_lowercase().starts_with(&format!("{}/", personas_dir(home).to_string_lossy().replace('\\', "/").to_lowercase()))
 }
 
-const SEED: [(&str, &str); 4] = [
-    ("planner.md", "# 기획자\n\n요청을 작고 검증 가능한 작업으로 나눈다. 코드를 쓰기 전에 목표, 범위, 하지 않을 것, 완료 기준을 먼저 정리한다.\n\n- 모호한 점은 가정으로 적고 확인을 요청한다\n- 작업마다 대상 파일, 바꿀 내용, 확인 방법을 적는다\n"),
-    ("implementer.md", "# 구현 담당\n\n맡은 작업만 가장 작은 변경으로 끝까지 구현한다. 범위 밖 수정은 하지 않는다.\n\n- 기존 코드의 방식과 이름을 따른다\n- 바꾼 로직에는 작은 테스트를 남긴다\n- 끝나면 바꾼 파일과 확인 방법을 짧게 보고한다\n"),
-    ("reviewer.md", "# 리뷰어\n\n코드를 고치지 않고 읽어서 문제를 찾는다. 버그, 보안, 빠진 경우, 불필요한 코드 순으로 본다.\n\n- 지적마다 파일:줄, 무엇이 왜 문제인지, 고치는 방향을 적는다\n- 확실하지 않은 것은 확실하지 않다고 표시한다\n"),
-    ("tester.md", "# 테스터\n\n변경이 실제로 동작하는지 확인한다. 테스트를 실행하고, 빠진 경우를 찾아 테스트를 추가한다.\n\n- 실행한 명령과 결과를 그대로 보고한다\n- 실패는 재현 방법과 함께 적는다\n"),
+/// The files Maestro ships (`src-tauri/seed/`): (folder under `~/.maestro`, file name, text).
+const BUILTIN: &[(&str, &str, &str)] = &[
+    ("personas", "architect.md", include_str!("../seed/personas/architect.md")),
+    ("personas", "designer.md", include_str!("../seed/personas/designer.md")),
+    ("personas", "docs-writer.md", include_str!("../seed/personas/docs-writer.md")),
+    ("personas", "implementer.md", include_str!("../seed/personas/implementer.md")),
+    ("personas", "planner.md", include_str!("../seed/personas/planner.md")),
+    ("personas", "reviewer.md", include_str!("../seed/personas/reviewer.md")),
+    ("personas", "tester.md", include_str!("../seed/personas/tester.md")),
+    ("library/지침", "agent-rules.md", include_str!("../seed/library/지침/agent-rules.md")),
+    ("library/지침", "coding-rules.md", include_str!("../seed/library/지침/coding-rules.md")),
+    ("library/지침", "git-rules.md", include_str!("../seed/library/지침/git-rules.md")),
+    ("library/PRD", "adr-template.md", include_str!("../seed/library/PRD/adr-template.md")),
+    ("library/PRD", "feature-spec.md", include_str!("../seed/library/PRD/feature-spec.md")),
+    ("library/PRD", "prd-template.md", include_str!("../seed/library/PRD/prd-template.md")),
+    ("library/디자인", "design-principles.md", include_str!("../seed/library/디자인/design-principles.md")),
+    ("library/디자인", "motion-guide.md", include_str!("../seed/library/디자인/motion-guide.md")),
+    ("library/디자인", "ui-checklist.md", include_str!("../seed/library/디자인/ui-checklist.md")),
+    ("library/RAG", "glossary.md", include_str!("../seed/library/RAG/glossary.md")),
+    ("library/RAG", "rag-doc-format.md", include_str!("../seed/library/RAG/rag-doc-format.md")),
+    ("library/RAG", "troubleshooting.md", include_str!("../seed/library/RAG/troubleshooting.md")),
+    ("playbooks", "default.md", include_str!("../seed/playbooks/default.md")),
+    ("playbooks", "architecture-first.md", include_str!("../seed/playbooks/architecture-first.md")),
+    ("playbooks", "bug-hunt.md", include_str!("../seed/playbooks/bug-hunt.md")),
+    ("playbooks", "plan-then-build.md", include_str!("../seed/playbooks/plan-then-build.md")),
+    ("playbooks", "race.md", include_str!("../seed/playbooks/race.md")),
+    ("playbooks", "review-loop.md", include_str!("../seed/playbooks/review-loop.md")),
+    ("playbooks", "split-build.md", include_str!("../seed/playbooks/split-build.md")),
 ];
 
-/// Creates the persona folder with a few starter roles the first time.
-pub fn seed_personas(home: &Path) {
-    let dir = personas_dir(home);
-    if dir.exists() {
-        return;
-    }
-    if std::fs::create_dir_all(&dir).is_ok() {
-        for (name, body) in SEED {
-            let _ = std::fs::write(dir.join(name), body);
+/// Writes the built-in personas, documents and playbooks that aren't there yet. Each folder's `.seeded` lists what
+/// was written once, so a file the user deleted stays deleted, and a newer Maestro still adds the files it newly
+/// ships. A file that already exists (edited by the user) is never overwritten.
+pub fn seed(home: &Path) {
+    for (dir, name, body) in BUILTIN {
+        let dir = home.join(".maestro").join(dir);
+        let marker = dir.join(".seeded");
+        let done = std::fs::read_to_string(&marker).unwrap_or_default();
+        if done.lines().any(|l| l == *name) || std::fs::create_dir_all(&dir).is_err() {
+            continue;
         }
+        let file = dir.join(name);
+        if !file.exists() {
+            let _ = std::fs::write(&file, body);
+        }
+        let _ = std::fs::write(&marker, format!("{done}{name}\n"));
     }
 }
 
@@ -50,6 +81,105 @@ pub fn create_persona(home: &Path, name: &str) -> Result<String, String> {
     Ok(path.to_string_lossy().replace('\\', "/"))
 }
 
+/// Playbooks: how the Maestro coordinates workers (`~/.maestro/playbooks`, the sidebar's 플레이북 tab). The
+/// Maestro agent's brief lists them.
+pub fn playbooks_dir(home: &Path) -> std::path::PathBuf {
+    home.join(".maestro").join("playbooks")
+}
+
+/// The playbook folder, as one `LibFolder` (the 플레이북 tab).
+pub fn playbooks(home: &Path) -> Vec<LibFolder> {
+    let dir = playbooks_dir(home);
+    vec![LibFolder { files: scan(&dir), folder: dir.to_string_lossy().replace('\\', "/"), persona: false }]
+}
+
+/// Shared documents, one folder per category (`~/.maestro/library/<category>`).
+pub fn docs_dir(home: &Path) -> std::path::PathBuf {
+    home.join(".maestro").join("library")
+}
+
+/// The persona folder first, then each category folder (by name).
+pub fn all(home: &Path) -> Vec<LibFolder> {
+    let personas = personas_dir(home);
+    let mut cats: Vec<std::path::PathBuf> = std::fs::read_dir(docs_dir(home))
+        .map(|r| r.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect())
+        .unwrap_or_default();
+    cats.sort();
+    std::iter::once((personas, true))
+        .chain(cats.into_iter().map(|c| (c, false)))
+        .map(|(f, persona)| LibFolder { files: scan(&f), folder: f.to_string_lossy().replace('\\', "/"), persona })
+        .collect()
+}
+
+/// `folder` must be the persona folder or a category folder: the only places the 문서 tab writes.
+fn managed(home: &Path, folder: &str) -> Result<std::path::PathBuf, String> {
+    let f = Path::new(folder);
+    let same = |a: &Path, b: &Path| a.to_string_lossy().replace('\\', "/").eq_ignore_ascii_case(&b.to_string_lossy().replace('\\', "/"));
+    if same(f, &personas_dir(home)) || same(f, &playbooks_dir(home)) || f.parent().is_some_and(|p| same(p, &docs_dir(home))) {
+        Ok(f.to_path_buf())
+    } else {
+        Err("Maestro 문서·플레이북 폴더가 아니에요".into())
+    }
+}
+
+/// A file name from what the user typed: letters, digits, `-`, `_` kept, the rest made `-`.
+fn file_stem(name: &str) -> Result<String, String> {
+    let stem: String = name.trim().chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();
+    if stem.trim_matches('-').is_empty() {
+        return Err("이름을 적어 주세요".into());
+    }
+    Ok(stem)
+}
+
+/// A new `<name>.md` with a `# name` heading in a managed folder; returns its path.
+pub fn create_doc(home: &Path, folder: &str, name: &str) -> Result<String, String> {
+    let dir = managed(home, folder)?;
+    let path = dir.join(format!("{}.md", file_stem(name)?));
+    if path.exists() {
+        return Err("같은 이름의 문서가 있어요".into());
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::write(&path, format!("# {}\n\n", name.trim())).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().replace('\\', "/"))
+}
+
+/// Copies Markdown files from elsewhere into a managed folder (a taken name gets `-2`, `-3`, …).
+pub fn import_docs(home: &Path, folder: &str, files: &[String]) -> Result<(), String> {
+    let dir = managed(home, folder)?;
+    for f in files {
+        let src = Path::new(f);
+        let stem = src.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "doc".into());
+        let mut to = dir.join(format!("{stem}.md"));
+        for n in 2.. {
+            if !to.exists() {
+                break;
+            }
+            to = dir.join(format!("{stem}-{n}.md"));
+        }
+        std::fs::copy(src, &to).map_err(|e| format!("{f}: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Deletes one file of a managed folder (the 문서 tab asks first).
+pub fn delete_doc(home: &Path, path: &str) -> Result<(), String> {
+    let p = Path::new(path);
+    managed(home, &p.parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default())?;
+    std::fs::remove_file(p).map_err(|e| e.to_string())
+}
+
+/// A new category folder.
+pub fn create_category(home: &Path, name: &str) -> Result<(), String> {
+    let dir = docs_dir(home).join(name.trim().replace(['/', '\\'], "-"));
+    if name.trim().is_empty() {
+        return Err("분류 이름을 적어 주세요".into());
+    }
+    if dir.exists() {
+        return Err("같은 이름의 분류가 있어요".into());
+    }
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())
+}
+
 const MAX_DEPTH: usize = 4;
 const MAX_FILES: usize = 500;
 
@@ -58,6 +188,8 @@ const MAX_FILES: usize = 500;
 pub struct MdFile {
     pub path: String,
     pub title: String,
+    /// the first line of body text (for the system tab's cards)
+    pub summary: String,
 }
 
 #[derive(Serialize)]
@@ -98,6 +230,14 @@ fn heading(text: &str) -> Option<String> {
     None
 }
 
+/// The first body line: frontmatter, headings, fences and list/quote marks skipped, at most 140 chars.
+fn summary(text: &str) -> String {
+    let body = text.strip_prefix("---").and_then(|r| r.split_once("\n---").map(|(_, b)| b)).unwrap_or(text);
+    let line = body.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with("```") && *l != "---").unwrap_or("");
+    let line = line.trim_start_matches(['-', '*', '>', ' ']);
+    line.chars().take(140).collect()
+}
+
 /// `.md` files under a folder (skipping .git / node_modules / target), titled.
 pub fn scan(folder: &Path) -> Vec<MdFile> {
     let mut out = vec![];
@@ -119,7 +259,9 @@ fn walk(dir: &Path, depth: usize, out: &mut Vec<MdFile>) {
                 walk(&p, depth + 1, out);
             }
         } else if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("md")) {
-            out.push(MdFile { path: p.to_string_lossy().replace('\\', "/"), title: title_of(&p) });
+            let text = std::fs::read_to_string(&p).unwrap_or_default();
+            let title = heading(&text).unwrap_or_else(|| p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default());
+            out.push(MdFile { path: p.to_string_lossy().replace('\\', "/"), title, summary: summary(&text) });
         }
     }
 }
@@ -138,8 +280,12 @@ mod tests {
     #[test]
     fn personas_seed_create_and_detect() {
         let home = std::env::temp_dir().join(format!("maestro-persona-{}", std::process::id()));
-        seed_personas(&home);
-        assert_eq!(scan(&personas_dir(&home)).len(), 4);
+        seed(&home);
+        assert_eq!(scan(&personas_dir(&home)).len(), 7);
+        // a deleted built-in stays deleted
+        std::fs::remove_file(personas_dir(&home).join("tester.md")).unwrap();
+        seed(&home);
+        assert_eq!(scan(&personas_dir(&home)).len(), 6);
         let p = create_persona(&home, "보안 담당").unwrap();
         assert!(p.ends_with("/보안-담당.md"));
         assert_eq!(title_of(Path::new(&p)), "보안 담당");
@@ -161,6 +307,27 @@ mod tests {
         std::fs::write(root.join("x.txt"), "# not md").unwrap();
         let got = scan(&root);
         assert_eq!(got.iter().map(|f| f.title.as_str()).collect::<Vec<_>>(), ["기획자", "b"]);
+        assert_eq!(got[1].summary, "plain");
+        assert_eq!(summary("---\nname: x\n---\n\n# 리뷰어\n\n- 변경을 읽고 판단한다\n"), "변경을 읽고 판단한다");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn docs_live_only_in_managed_folders() {
+        let home = std::env::temp_dir().join(format!("maestro-docs-{}", std::process::id()));
+        seed(&home);
+        let cats = all(&home);
+        assert!(cats[0].persona);
+        let guide = cats.iter().find(|c| c.folder.ends_with("/지침")).expect("seeded category").folder.clone();
+        let made = create_doc(&home, &guide, "커밋 규칙").unwrap();
+        assert!(made.ends_with("/커밋-규칙.md"));
+        assert!(create_doc(&home, &guide, "커밋 규칙").is_err());
+        // outside the library: refused
+        assert!(create_doc(&home, &home.to_string_lossy(), "x").is_err());
+        assert!(delete_doc(&home, &home.join("other.md").to_string_lossy()).is_err());
+        create_category(&home, "체크리스트").unwrap();
+        assert!(all(&home).iter().any(|c| c.folder.ends_with("/체크리스트")));
+        delete_doc(&home, &made).unwrap();
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

@@ -2,7 +2,7 @@
 title: 테마와 모션
 area: ui
 status: done
-files: [src/settings.ts, src/styles.css, src/SettingsDialog.tsx]
+files: [src/settings.ts, src/styles.css, src/SettingsDialog.tsx, src/nodes/AgentNode.tsx]
 related: [features/ui/settings-dialog.md, reference/settings-keys.md]
 updated: 2026-11-02
 ---
@@ -28,6 +28,13 @@ updated: 2026-11-02
 - 밝은 테마(`light: true`)에서는 캔버스(React Flow)와 터미널, 편집기도 밝은 색 구성을 써요.
 - 저장된 테마가 지금 목록에 없으면(예: 지운 `forest`) `dark`로 돌아가요.
 
+**캔버스 배경**(설정 → 스타일 → 캔버스 배경)
+- 점(기본) / 격자 / 십자 / 없음 중에서 골라요. 프로젝트 캔버스와 에이전트 캔버스 모두에 적용되고, 무늬 간격은 블록이 붙는 격자(24px)와 같아요.
+- 격자와 십자는 테마의 테두리 색(`--mae-border`)으로 그려서 어느 테마에서도 튀지 않아요.
+- **간격**: 촘촘(12px) / 보통(24px, 기본) / 넓게(48px) / 아주 넓게(96px). 블록이 붙는 24px 격자의 절반이나 배수라 무늬가 블록 정렬과 어긋나지 않아요.
+- **진하기**: 10–100% 슬라이더(기본 100%). 무늬 색을 그만큼 투명하게 섞어요.
+- "없음"이면 간격과 진하기는 꺼져요.
+
 **패널 구분**(설정 → 스타일 → 패널 구분)
 | 단계 | id | 패널 사이 | 좌우·아래 여백 |
 |---|---|---|---|
@@ -46,6 +53,7 @@ updated: 2026-11-02
 ## 구현
 
 - 목록과 값: `THEMES`, `EASINGS`, `SPEEDS`, `isLightTheme`, `motionMs`(settings.ts)
+- 캔버스 배경: `CANVAS_BGS`(`dots`, `lines`, `cross`, `none`), 설정 `canvasBg`, `canvasGap`(`CANVAS_GAPS`), `canvasAlpha`. 색은 `color-mix(… alpha%, transparent)`로 흐리게 해요. `CanvasBackground`(nodes/AgentNode.tsx)가 React Flow `Background`의 무늬로 그리고, Canvas와 ProjectMap이 같이 써요.
 - 패널 구분: `PANEL_STYLES`(`cards`, `lines`, `full`), 설정 `panelStyle`. `applySettings`가 `<html data-panels>`로 넣어요. styles.css에서 `lines`와 `full`이 같은 규칙으로 틈을 없애고, `full`만 여백·바깥 테두리·모서리를 더 없애요. id는 처음 두 단계 버전 그대로라 저장된 값이 그대로 이어져요.
 - `applySettings`가 `data-theme`, `--mae-ease`, `--mae-dur`를 `<html>`에 넣어요. 첫 화면을 그리기 전에 한 번 불러서 기본 테마가 깜빡이지 않게 해요.
 - CSS 변수(styles.css): `--mae-frame`, `--mae-panel`, `--mae-panel-2`, `--mae-bg`, `--mae-canvas`, `--mae-node`, `--mae-border`, `--mae-text`, `--mae-muted`, `--mae-accent`, `--mae-hover`, `--mae-selected`, `--mae-shadow` 등

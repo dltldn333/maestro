@@ -27,6 +27,10 @@ pub(crate) struct AppState {
     /// lowercased worktree path → lowercased project root, for agents (setup terminals have none)
     roots: Mutex<HashMap<String, String>>,
     away: Mutex<Away>,
+    /// lowercased worktree path → the blocks the user selected on that agent's canvas (`maestro selection`)
+    pub(crate) selection: Mutex<HashMap<String, serde_json::Value>>,
+    /// lowercased worktree path → structure an agent drew with `maestro draw`, waiting for its canvas to take it
+    pub(crate) drawings: Mutex<HashMap<String, Vec<serde_json::Value>>>,
 }
 
 /// Which projects are on screen (per window: splits can show several, pop-out windows more), when each other
@@ -138,6 +142,23 @@ fn reap_away(app: &AppHandle) {
     }
 }
 
+/// Structure the agent `owner` drew (`maestro draw`) since its canvas last looked; taking it empties the queue.
+#[tauri::command]
+fn take_canvas_drawings(state: State<AppState>, owner: String) -> Vec<serde_json::Value> {
+    state.drawings.lock().unwrap().remove(&owner.to_lowercase()).unwrap_or_default()
+}
+
+/// What the user selected on agent `owner`'s canvas, for `maestro selection`; an empty list clears it.
+#[tauri::command]
+fn set_canvas_selection(state: State<AppState>, owner: String, items: serde_json::Value) {
+    let mut s = state.selection.lock().unwrap();
+    if items.as_array().map_or(true, |a| a.is_empty()) {
+        s.remove(&owner.to_lowercase());
+    } else {
+        s.insert(owner.to_lowercase(), items);
+    }
+}
+
 /// The projects on screen in the calling window (each window reports its own; a closed one is dropped).
 #[tauri::command]
 fn set_away(window: tauri::Window, state: State<AppState>, active_roots: Vec<String>, minutes: u64) {
@@ -187,6 +208,18 @@ fn atomic_write(path: &Path, text: &str) -> Result<(), String> {
 #[tauri::command]
 async fn list_repos(app: AppHandle) -> Result<Vec<RepoInfo>, String> {
     Ok(read_repos(&app)?.iter().map(|r| repo_info(r)).collect())
+}
+
+/// "ready", "empty" (no commit yet) or "none" (not a git repo): the sidebar asks before `init_repo`.
+#[tauri::command]
+async fn repo_state(path: String) -> &'static str {
+    worktree::repo_state(&path)
+}
+
+/// `git init` and/or a first commit, so the folder can be added as a project.
+#[tauri::command]
+async fn init_repo(path: String) -> Result<(), String> {
+    worktree::init_repo(&path)
 }
 
 #[tauri::command]
@@ -910,27 +943,22 @@ async fn file_at_head(base: String, rel: String) -> Result<String, String> {
 
 // ---------- canvas ----------
 
-// ---------- library (보관함): registered folders of Markdown for canvas blocks ----------
-
-fn library_file(app: &AppHandle, project_root: &str) -> Result<PathBuf, String> {
-    Ok(worktree::project_dir(&home(app)?, project_root).join("library.json"))
-}
-
-fn read_library(app: &AppHandle, project_root: &str) -> Result<Vec<String>, String> {
-    Ok(std::fs::read_to_string(library_file(app, project_root)?).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default())
-}
+// ---------- documents (the sidebar's 문서 tab): Maestro's own Markdown, shared by every project ----------
 
 #[tauri::command]
-async fn library_list(app: AppHandle, project_root: String) -> Result<Vec<library::LibFolder>, String> {
-    library_folders(&app, &project_root)
+async fn library_list(app: AppHandle) -> Result<Vec<library::LibFolder>, String> {
+    library_folders(&app)
 }
 
-/// The persona folder first, then the project's registered Markdown folders (also `maestro library list`).
-pub(crate) fn library_folders(app: &AppHandle, project_root: &str) -> Result<Vec<library::LibFolder>, String> {
-    let personas = library::personas_dir(&home(app)?);
-    let mut out = vec![library::LibFolder { files: library::scan(&personas), folder: personas.to_string_lossy().replace('\\', "/"), persona: true }];
-    out.extend(read_library(app, project_root)?.into_iter().map(|folder| library::LibFolder { files: library::scan(Path::new(&folder)), folder, persona: false }));
-    Ok(out)
+/// The persona folder first, then the document categories (also `maestro library list`).
+pub(crate) fn library_folders(app: &AppHandle) -> Result<Vec<library::LibFolder>, String> {
+    Ok(library::all(&home(app)?))
+}
+
+/// The playbooks (the sidebar's 플레이북 tab), as one folder.
+#[tauri::command]
+async fn playbook_list(app: AppHandle) -> Result<Vec<library::LibFolder>, String> {
+    Ok(library::playbooks(&home(&app)?))
 }
 
 /// A new persona in the shared persona folder; returns its file path.
@@ -940,8 +968,24 @@ fn persona_create(app: AppHandle, name: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn library_set(app: AppHandle, project_root: String, folders: Vec<String>) -> Result<(), String> {
-    atomic_write(&library_file(&app, &project_root)?, &serde_json::to_string_pretty(&folders).unwrap())
+fn docs_create(app: AppHandle, folder: String, name: String) -> Result<String, String> {
+    library::create_doc(&home(&app)?, &folder, &name)
+}
+
+/// Copies Markdown files into a category: adding to Maestro's documents (using one is only a reference).
+#[tauri::command]
+fn docs_import(app: AppHandle, folder: String, files: Vec<String>) -> Result<(), String> {
+    library::import_docs(&home(&app)?, &folder, &files)
+}
+
+#[tauri::command]
+fn docs_delete(app: AppHandle, path: String) -> Result<(), String> {
+    library::delete_doc(&home(&app)?, &path)
+}
+
+#[tauri::command]
+fn docs_category(app: AppHandle, name: String) -> Result<(), String> {
+    library::create_category(&home(&app)?, &name)
 }
 
 /// A Markdown file's block title (its top `#` heading), for files dropped from the file tree.
@@ -983,7 +1027,7 @@ fn main() {
             app.manage(server);
             agent::install_cli(&home(app.handle())?);
             workspace::warm_later(app.handle().clone());
-            library::seed_personas(&home(app.handle())?);
+            library::seed(&home(app.handle())?);
             let h = app.handle().clone();
             std::thread::spawn(move || loop {
                 std::thread::sleep(Duration::from_secs(30));
@@ -994,6 +1038,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_repos,
             add_repo,
+            repo_state,
+            init_repo,
             remove_repo,
             list_worktrees,
             list_branches,
@@ -1007,7 +1053,11 @@ fn main() {
             summarize_agent,
             create_maestro,
             library_list,
-            library_set,
+            playbook_list,
+            docs_create,
+            docs_import,
+            docs_delete,
+            docs_category,
             persona_create,
             md_title,
             attach_agent,
@@ -1021,6 +1071,8 @@ fn main() {
             answer_approval,
             stop_agent,
             set_away,
+            set_canvas_selection,
+            take_canvas_drawings,
             pty_snapshot,
             pty_write,
             pty_resize,

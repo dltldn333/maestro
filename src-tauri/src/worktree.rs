@@ -31,6 +31,35 @@ pub fn toplevel(path: &str) -> Result<String, String> {
     git(Path::new(path), &["rev-parse", "--show-toplevel"]).map_err(|e| format!("Git 저장소가 아닙니다: {e}"))
 }
 
+/// Whether a picked folder can be a project as is: "ready", "empty" (a repo with no commit yet, so no worktree
+/// can branch off it) or "none" (not inside a git repo).
+pub fn repo_state(path: &str) -> &'static str {
+    match toplevel(path) {
+        Err(_) => "none",
+        Ok(root) if git(Path::new(&root), &["rev-parse", "--verify", "HEAD"]).is_err() => "empty",
+        Ok(_) => "ready",
+    }
+}
+
+/// Makes a folder usable as a project: `git init` (branch main) if it isn't a repo, and a first commit of what's
+/// there if there's none yet. Without a git identity the commit is signed as Maestro, so a fresh machine works too.
+pub fn init_repo(path: &str) -> Result<(), String> {
+    if toplevel(path).is_err() {
+        git(Path::new(path), &["init", "-b", "main"]).map_err(|e| format!("git init 실패: {e}"))?;
+    }
+    let root = toplevel(path)?;
+    let dir = Path::new(&root);
+    if git(dir, &["rev-parse", "--verify", "HEAD"]).is_ok() {
+        return Ok(());
+    }
+    git(dir, &["add", "-A"]).map_err(|e| format!("git add 실패: {e}"))?;
+    let commit = ["commit", "--allow-empty", "-m", "Initial commit"];
+    git(dir, &commit)
+        .or_else(|_| git(dir, &[&["-c", "user.name=Maestro", "-c", "user.email=maestro@localhost"][..], &commit[..]].concat()))
+        .map(|_| ())
+        .map_err(|e| format!("첫 커밋 실패: {e}"))
+}
+
 /// origin's default branch, else the current branch, else HEAD.
 pub fn default_branch(root: &str) -> String {
     let root = Path::new(root);
@@ -201,6 +230,22 @@ pub fn show_head(path: &str, rel: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn init_makes_a_plain_folder_a_project() {
+        let dir = std::env::temp_dir().join(format!("maestro-init-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "hi").unwrap();
+        let p = dir.to_string_lossy().to_string();
+        assert_eq!(repo_state(&p), "none");
+        init_repo(&p).unwrap();
+        assert_eq!(repo_state(&p), "ready");
+        // the files there are in the first commit, so worktrees start with them
+        assert!(git(&dir, &["ls-files"]).unwrap().contains("a.txt"));
+        init_repo(&p).unwrap(); // again: nothing to do
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn project_dir_is_stable_and_safe() {

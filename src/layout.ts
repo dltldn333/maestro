@@ -2,7 +2,16 @@
  * The window's split layout: tab groups side by side ("row") or stacked ("col"), nested. The layout belongs to
  * the window, not to a project: each group shows its own project.
  */
-export type Layout = { group: string } | { dir: "row" | "col"; children: Layout[] };
+export type Layout = { group: string } | { dir: "row" | "col"; children: Layout[]; sizes?: number[] };
+// `sizes`: each child's share (flex-grow), set by dragging the line between them. Any split or close that changes
+// a split's children drops its sizes (back to equal), since they no longer line up.
+
+/** `l` with the split whose groups are `key` (leaves joined by "+") given these sizes. */
+export function withSizes(l: Layout, key: string, sizes: number[]): Layout {
+  if ("group" in l) return l;
+  if (leaves(l).join("+") === key) return { ...l, sizes };
+  return { ...l, children: l.children.map((c) => withSizes(c, key, sizes)) };
+}
 /** Where a dragged tab lands on a group: an edge splits that way, the centre joins the group. */
 export type Side = "left" | "right" | "top" | "bottom";
 

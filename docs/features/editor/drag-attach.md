@@ -25,7 +25,7 @@ updated: 2026-11-01
 - **끌기 시작:** `TreeItem` `onDragStart`
   - `dataTransfer`에 `DRAG_MIME`(`application/x-maestro-path`, 워크트리 기준 상대 경로)을 넣어요. 마크다운이면 `MD_MIME`도 넣어요.
   - `document.documentElement.dataset.dragging`을 `"file"`(마크다운이면 `"file md"`)로 두고, `onDragEnd`에서 지워요.
-  - 보관함(LibraryPanel)에서 끌면 `"md"`예요.
+  - 문서 목록(DocsList)에서 끌면 `"md"`예요.
 - **칩:** `.drag-chip` 요소를 잠깐 만들어 `setDragImage`로 넘기고, 다음 프레임에 지워요. 브라우저는 그 순간 모양을 찍어 두기 때문이에요.
 - **놓을 자리**(styles.css)
   - `:root[data-dragging~="file"] :is(.composer, .node-prompt)::after`가 박스예요.

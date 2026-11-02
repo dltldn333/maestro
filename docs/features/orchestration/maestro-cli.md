@@ -19,7 +19,7 @@ related:
   - features/orchestration/library-and-personas.md
   - features/worktrees/branch-selection.md
   - reference/storage-layout.md
-updated: 2026-11-01
+updated: 2026-11-03
 ---
 
 # maestro CLI (에이전트가 Maestro를 조작하는 명령)
@@ -38,12 +38,14 @@ updated: 2026-11-01
 | `maestro worktree list` | 없음 | 프로젝트의 모든 에이전트 카드. 각 항목에 `role`(`"maestro"` 또는 `""`)과 `parent` 이름 |
 | `maestro worktree create` | `--name`(필수) `--prompt` `--agent claude-code\|antigravity` `--model` `--description` `--branch` `--base` `--checkout` | 새 워크트리와 에이전트를 만들고 나의 워커로 연결. `--prompt`가 있으면 첫 지시로 보냄 |
 | `maestro branch list` | 없음 | `base`(마에스트로 기준 브랜치)와 `branches`(name, remote, inUse) |
-| `maestro library list` | 없음 | 페르소나 폴더와 이 프로젝트 보관함 폴더의 마크다운 목록 |
+| `maestro library list` | 없음 | Maestro 문서: 페르소나 폴더와 분류 폴더(`~/.maestro/library/<분류>`)의 마크다운 목록 |
 | `maestro ref list` | `--to` | 그 에이전트(기본은 나)의 참조 문서. 각 항목에 `persona` 여부 |
 | `maestro ref add` | `--path`(필수) `--to` | 마크다운 참조 연결. 그 에이전트 캔버스에 마크다운 블록이 생김 |
 | `maestro ref remove` | `--path`(필수) `--to` | 참조 해제 |
 | `maestro send` | `--to`(필수) `--text`(필수) | 다른 에이전트에게 지시 보내기. 꺼져 있으면 시작(재개)함 |
 | `maestro read` | `--to` | 그 에이전트(기본은 나)의 상태와 마지막 답변(`lastAnswer`) |
+| `maestro selection` | 없음 | 사용자가 내 캔버스에서 지금 선택한 블록들(`selected`): 에이전트(name, branch, path), 문서(title, path), 프롬프트 블록(name), 구조 블록(kind `block`: title, body, area, to), 영역(kind `area`: title, holds, to). 나 자신의 블록은 빠져요. → [구조 그리기](../canvas/structure-drawing.md) |
+| `maestro draw` | `--file 구조.json` | 내 캔버스에 구조를 그려요. 형식 `{"areas":[{"title","in"?}], "blocks":[{"title","body"?,"area"?}], "arrows":[{"from","to","label"?}]}`. 이름이 이미 있는 블록은 내용만 고쳐 쓰고, 화살표는 라벨만 바꿔요. 이름 오타(화살표 끝, 속한 영역)는 그리기 전에 오류로 돌려줘요. → [구조 그리기](../canvas/structure-drawing.md) |
 
 - 성공하면 JSON을 보기 좋게 출력하고 종료 코드 0이에요. 서버 오류는 `오류: <메시지>`를 stderr에 쓰고 1, 플래그 값이 빠지면 2예요.
 - `--to`는 이 프로젝트 워크트리의 이름, 브랜치, 폴더 이름, 전체 경로 중 하나로 찾아요(대소문자 무시).
@@ -89,6 +91,8 @@ updated: 2026-11-01
 - `Bash(maestro:*)` 자동 허용 규칙은 Claude Code에만 있어요. Antigravity는 허용 규칙을 넘기는 방법을 확인하지 못해서, `maestro` 명령을 처음 쓸 때 권한을 물을 수 있어요("항상 허용"하면 그 뒤로는 안 물어요). 안내 문구(브리프)는 Antigravity도 받아요.
 - 릴리스 빌드에서 `maestro-cli`가 앱 옆에 함께 번들되는지는 확인 안 됨이에요(`beforeBuildCommand`는 `npm run build`뿐이에요).
 - 응답 파싱은 단순해요. `Connection: close`로 받은 전체를 `\r\n\r\n`에서 나눠요.
+
+- 선택: 캔버스가 선택이 바뀔 때마다 `set_canvas_selection(owner, items)`로 알려 `AppState.selection`(워크트리 경로별, 메모리에만)에 두고, `selection` 경로가 호출한 에이전트 것을 돌려줘요. 캔버스가 닫히면 비워요. 에이전트 안내문(`MAESTRO_HINT`)에 "사용자가 '선택한 것', '이것들'이라고 하면 먼저 `maestro selection`을 보라"는 규칙이 있어요.
 
 ## 결정 기록
 

@@ -33,7 +33,8 @@ export function ViewMap({ nodes }: { nodes: CanvasNode[] }) {
       <svg
         className="viewmap nodrag nopan nowheel"
         data-held={held ? "" : undefined}
-        style={{ aspectRatio: `${w} / ${h}` }}
+        // the canvas's shape, fitted inside 140 × 100 (a tall or wide split would otherwise stretch it)
+        style={{ "--vm-w": `${Math.min(140, (100 * w) / (h || 1))}px`, "--vm-h": `${Math.min(100, (140 * h) / (w || 1))}px` } as React.CSSProperties}
         viewBox={`${box.x} ${box.y} ${box.w} ${box.h}`}
         onPointerDown={(e) => {
           if (e.button !== 0) return;

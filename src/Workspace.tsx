@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { Fragment, lazy, Suspense, useEffect, useRef, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -7,9 +7,11 @@ import { ProjectMap } from "./ProjectMap";
 import { NewAgentDialog } from "./NewAgentDialog";
 import { AgentFull, LayoutToggle } from "./AgentFull";
 import { StageTabs } from "./StageTabs";
+import { SystemDashboard } from "./LibraryPanel";
+import { LogoLoading, LogoMotion, Spinner } from "./LogoMotion";
 import { useSettings } from "./settings";
 import { leaves } from "./layout";
-import { activeTab, fileKey, groupView, useStore, useVisibleRoots, type Group, type Layout, type Side, type StageTab } from "./store";
+import { activeTab, fileKey, groupView, SYSTEM_ROOT, useStore, useVisibleRoots, type Group, type Layout, type Side, type StageTab } from "./store";
 import { ipc } from "./ipc";
 import type { AgentStatePayload, Approval, Repo } from "./types";
 
@@ -66,10 +68,7 @@ export function WindowControls() {
 export function Brand({ name = "Maestro" }: { name?: string }) {
   return (
     <span className="brand" data-tauri-drag-region>
-      <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden>
-        <rect width="20" height="20" rx="5" fill="var(--mae-accent)" />
-        <path d="M5.5 14.5v-9l4.5 6 4.5-6v9" fill="none" stroke="var(--mae-on-accent)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
+      <LogoMotion />
       {name}
     </span>
   );
@@ -110,10 +109,15 @@ function GroupView({ group, focused, last, inWindow, dialogs }: { group: Group; 
   const root = group.root;
   const scope = useStore((s) => s.worktrees.find((w) => w.path === group.path && w.root === root)?.path);
   const loading = useStore((s) => !s.ready || (!!root && !s.scanned.includes(root)));
-  const agentLayout = useSettings((s) => s.agentLayout);
+  const lastLayout = useSettings((s) => s.agentLayout);
+  // this tab's own full screen / canvas (a tab from before it had one: the last choice)
+  const tab = group.tabs.find((t): t is Extract<StageTab, { kind: "wt" }> => t.kind === "wt" && t.path === group.path);
+  const agentLayout = tab?.layout ?? lastLayout;
+  const toggle = scope && <LayoutToggle value={agentLayout} onChange={(v) => useStore.getState().setTabLayout(group.id, scope, v)} />;
   const [zone, setZone] = useState<Side | "center" | null>(null);
   const fileTabs = group.tabs.filter((t): t is Extract<StageTab, { kind: "file" }> => t.kind === "file");
   const { focusGroup, pinTab } = useStore.getState();
+  const systemView = useStore((s) => s.systemView);
   // a drag that ended anywhere (dropped elsewhere, Esc) takes the drop preview with it
   useEffect(() => {
     if (!zone) return;
@@ -145,14 +149,26 @@ function GroupView({ group, focused, last, inWindow, dialogs }: { group: Group; 
             if (t) pinTab(t, group.id);
           }}
         >
-          {loading || !root ? (
+          {root === SYSTEM_ROOT ? (
+            <SystemDashboard view={systemView} onView={(v) => useStore.setState({ systemView: v })} />
+          ) : loading || !root ? (
             <div className="empty">
-              {!root && !loading ? <p className="muted">왼쪽에서 프로젝트를 고르세요.</p> : <p className="muted"><span className="spinner" /> 저장소와 워크트리를 읽는 중…</p>}
+              {!root && !loading ? <p className="muted">왼쪽에서 프로젝트를 고르세요.</p> : <LogoLoading text="저장소와 워크트리를 읽는 중…" />}
             </div>
           ) : scope && agentLayout === "full" ? (
-            <AgentFull key={scope} path={scope} />
+            <AgentFull key={scope} path={scope} toggle={toggle} />
           ) : scope ? (
-            <Canvas key={`${root}|${scope}`} root={root} scope={scope} onNewAgent={(o) => dialogs.onNewAgent(o)} onOpenSettings={dialogs.onOpenSettings} />
+            <Canvas
+              key={`${root}|${scope}`}
+              root={root}
+              scope={scope}
+              onNewAgent={(o) => dialogs.onNewAgent(o)}
+              onOpenSettings={dialogs.onOpenSettings}
+              onFull={() => {
+                useStore.getState().setTabLayout(group.id, scope, "full");
+                useSettings.getState().set({ agentLayout: "full" });
+              }}
+            />
           ) : (
             <ProjectMap
               key={root}
@@ -164,14 +180,12 @@ function GroupView({ group, focused, last, inWindow, dialogs }: { group: Group; 
           )}
           {/* full view has it in its header; on an agent canvas it sits in the corner */}
           {scope && agentLayout === "canvas" && (
-            <div className="stage-corner">
-              <LayoutToggle />
-            </div>
+            <div className="stage-corner">{toggle}</div>
           )}
           {/* over the stage, so the canvas or agent underneath keeps running and keeps its state;
               every open file stays mounted (hidden when not on screen) so its unsaved edits survive tab switches */}
           {fileTabs.length > 0 && (
-            <Suspense fallback={group.editor && <div className="code-view empty"><p className="muted"><span className="spinner" /> 편집기 불러오는 중…</p></div>}>
+            <Suspense fallback={group.editor && <div className="code-view empty"><p className="muted"><Spinner /> 편집기 불러오는 중…</p></div>}>
               {fileTabs.map((t) => (
                 <CodeView
                   key={fileKey(t.base, t.rel)}
@@ -212,11 +226,45 @@ function GroupView({ group, focused, last, inWindow, dialogs }: { group: Group; 
 /** The split layout, drawn as nested rows and columns of groups. */
 function LayoutView({ node, focus, lastId, inWindow, dialogs }: { node: Layout; focus: string; lastId: string; inWindow: boolean; dialogs: Dialogs }) {
   const group = useStore((s) => ("group" in node ? s.groups[node.group] : undefined));
+  const box = useRef<HTMLDivElement>(null);
+  // while the line between two children is dragged: their shares, live; saved to the workspace on release
+  const [live, setLive] = useState<number[] | null>(null);
   if ("group" in node) return group ? <GroupView group={group} focused={node.group === focus} last={node.group === lastId} inWindow={inWindow} dialogs={dialogs} /> : null;
+  const sizes = live ?? node.sizes ?? node.children.map(() => 1);
+  const row = node.dir === "row";
+
+  const drag = (i: number) => (e: React.PointerEvent) => {
+    if (e.button !== 0 || !box.current) return;
+    const el = e.currentTarget as HTMLElement;
+    el.setPointerCapture(e.pointerId);
+    const total = sizes.reduce((a, b) => a + b, 0);
+    const span = row ? box.current.clientWidth : box.current.clientHeight;
+    const start = row ? e.clientX : e.clientY;
+    const pair = sizes[i] + sizes[i + 1];
+    const min = total * 0.08; // a group never shrinks below ~8% of the split
+    let next = sizes;
+    el.onpointermove = (m) => {
+      const d = (((row ? m.clientX : m.clientY) - start) / span) * total;
+      const a = Math.min(pair - min, Math.max(min, sizes[i] + d));
+      next = sizes.map((v, j) => (j === i ? a : j === i + 1 ? pair - a : v));
+      setLive(next);
+    };
+    el.onpointerup = el.onpointercancel = () => {
+      el.onpointermove = el.onpointerup = el.onpointercancel = null;
+      useStore.getState().setSplitSizes(leaves(node).join("+"), next);
+      setLive(null);
+    };
+  };
+
   return (
-    <div className="split" data-dir={node.dir}>
-      {node.children.map((c) => (
-        <LayoutView key={"group" in c ? c.group : leaves(c).join("+")} node={c} focus={focus} lastId={lastId} inWindow={inWindow} dialogs={dialogs} />
+    <div ref={box} className="split" data-dir={node.dir} data-resizing={live ? "" : undefined}>
+      {node.children.map((c, i) => (
+        <Fragment key={"group" in c ? c.group : leaves(c).join("+")}>
+          {i > 0 && <div className="split-gutter" role="separator" aria-orientation={row ? "vertical" : "horizontal"} title="끌어서 비율 조절 · 더블클릭하면 같게" onPointerDown={drag(i - 1)} onDoubleClick={() => useStore.getState().setSplitSizes(leaves(node).join("+"), node.children.map(() => 1))} />}
+          <div className="split-cell" style={{ flex: `${sizes[i]} 1 0` }}>
+            <LayoutView node={c} focus={focus} lastId={lastId} inWindow={inWindow} dialogs={dialogs} />
+          </div>
+        </Fragment>
       ))}
     </div>
   );

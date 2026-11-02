@@ -4,14 +4,14 @@ area: reference
 status: done
 files: [src-tauri/src/main.rs, src-tauri/src/worktree.rs, src-tauri/src/agent.rs, src-tauri/src/approval.rs, src-tauri/src/library.rs, src-tauri/src/antigravity.rs, src-tauri/src/commands.rs, src/Canvas.tsx]
 related: [reference/tauri-commands.md, reference/settings-keys.md, architecture/overview.md]
-updated: 2026-11-01
+updated: 2026-11-02
 ---
 
 # 디스크 저장 위치
 
 ## 요약
 
-Maestro가 디스크에 쓰는 것은 모두 홈 폴더의 `~/.maestro` 아래에 있어요. 저장소 목록, 공용 페르소나, `maestro` CLI 복사본은 바로 아래에 있고, 나머지(워크트리, 에이전트 meta, 캔버스, 보관함)는 프로젝트별 폴더 `~/.maestro/projects/<이름>_<해시>/`에 있어요. 채팅 기록은 Maestro가 따로 저장하지 않고, 에이전트 CLI가 자기 폴더에 쓰는 대화 기록 파일을 읽어요.
+Maestro가 디스크에 쓰는 것은 모두 홈 폴더의 `~/.maestro` 아래에 있어요. 저장소 목록, 공용 페르소나와 문서(`library/`), `maestro` CLI 복사본은 바로 아래에 있고, 나머지(워크트리, 에이전트 meta, 캔버스)는 프로젝트별 폴더 `~/.maestro/projects/<이름>_<해시>/`에 있어요. 채팅 기록은 Maestro가 따로 저장하지 않고, 에이전트 CLI가 자기 폴더에 쓰는 대화 기록 파일을 읽어요.
 
 ## `~/.maestro` 구조
 
@@ -46,7 +46,7 @@ Maestro가 디스크에 쓰는 것은 모두 홈 폴더의 `~/.maestro` 아래�
 | `…/agents/<이름>.brief.md` | Claude의 `--append-system-prompt-file` 내용: `maestro` CLI 안내, 마에스트로 역할·기준 브랜치, 페르소나, 참조 문서 목록. 시작할 때마다 다시 써요 | agent.rs `system_brief()` (`Agent::spawn`, Claude) |
 | `…/agents/<이름>.brief/AGENTS.md` | 같은 브리프를 Antigravity용 규칙 파일로 쓴 것. 이 폴더를 `--add-dir`로 넘기면 agy가 규칙으로 읽어요 | agent.rs `Agent::spawn` (Antigravity) |
 | `…/canvases/<key>.json` | 캔버스 상태. `key`는 마에스트로 캔버스면 `overview`, 워크트리 캔버스면 워크트리 폴더 이름(영숫자·`-`·`_` 밖은 `_`) | main.rs `save_canvas_state` (`atomic_write`) |
-| `…/library.json` | 보관함에 등록한 Markdown 폴더 경로의 JSON 배열 | main.rs `library_set` (`atomic_write`) |
+| `~/.maestro/library/<분류>/*.md` | Maestro 공용 문서(분류 폴더마다). 예전 프로젝트별 `…/library.json`은 더 이상 읽지 않아요 | library.rs `seed_docs` / `create_doc` / `import_docs` |
 
 `.settings.json`과 `.brief.md`는 meta 파일 경로의 확장자를 바꿔서 만들어요(`meta.with_extension(...)`). 그래서 `maestro.json`이면 `maestro.settings.json`, `maestro.brief.md`가 돼요.
 
@@ -79,7 +79,7 @@ Maestro가 디스크에 쓰는 것은 모두 홈 폴더의 `~/.maestro` 아래�
 | `~/.gemini/antigravity-cli/cache/last_conversations.json` | 작업 폴더 → 최근 대화 id 맵. 새 Antigravity 에이전트의 대화 id를 여기서 찾아 meta `cliSessionId`에 저장해요 | antigravity.rs `conversation_for()` |
 | `<워크트리>/.claude/commands/**`, `<워크트리>/.claude/skills/*/SKILL.md` | 프로젝트 슬래시 명령·스킬 | commands.rs `list()` (`list_slash_commands`) |
 | `~/.claude/commands/**`, `~/.claude/skills/*/SKILL.md` | 사용자 슬래시 명령·스킬 | commands.rs `list()` |
-| 보관함 등록 폴더의 `*.md` | 깊이 4까지, 최대 500개. `.`으로 시작하는 폴더, `node_modules`, `target`은 건너뛰어요 | library.rs `scan()` |
+| 페르소나·문서 폴더의 `*.md` | 깊이 4까지, 최대 500개. `.`으로 시작하는 폴더, `node_modules`, `target`은 건너뛰어요 | library.rs `scan()` |
 
 ## 제약과 알려진 문제
 

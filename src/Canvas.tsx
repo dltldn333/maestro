@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Background,
   BaseEdge,
   EdgeLabelRenderer,
   getBezierPath,
@@ -9,6 +8,7 @@ import {
   ReactFlow,
   ConnectionMode,
   MarkerType,
+  SelectionMode,
   addEdge,
   useEdgesState,
   useNodesState,
@@ -19,19 +19,22 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useShallow } from "zustand/react/shallow";
-import { ipc } from "./ipc";
+import { ipc, type DocFile } from "./ipc";
 import { PromptNode } from "./nodes/PromptNode";
-import { AgentNode, GRID, TERM_SIZES, clampAgentSize } from "./nodes/AgentNode";
-import { CARD_SIZE, WorktreeCard } from "./nodes/WorktreeCard";
+import { AgentBar, AgentNode, BarButton, CanvasBackground, barOpen as openBars, COMPACT_SIZE, GRID, TERM_SIZES, clampAgentSize } from "./nodes/AgentNode";
+import { CARD_COMPACT, CARD_SIZE, WorktreeCard } from "./nodes/WorktreeCard";
 import { MD_SIZE, MarkdownBlock } from "./nodes/MarkdownBlock";
-import { LibraryPanel, MD_MIME } from "./LibraryPanel";
+import { ArrowEdge, BLOCK_SIZE, StructBlock, StructEditor, ZONE_SIZE, ZONE_Z, ZoneFrame } from "./nodes/StructNodes";
+import { LibraryPanel, MD_MIME, PlaybookPanel } from "./LibraryPanel";
+import { listen } from "@tauri-apps/api/event";
+import { applyDrawing } from "./drawing";
 import { useStore, type Worktree } from "./store";
 import { ViewMap } from "./ViewMap";
 import { isLightTheme, motionMs, useSettings } from "./settings";
 import { GearIcon } from "./SettingsDialog";
-import type { CanvasEdge, CanvasNode, CanvasStateSchema } from "./types";
+import type { CanvasEdge, CanvasNode, CanvasStateSchema, Picked, StructNode, ZoneNode } from "./types";
 
-const nodeTypes = { prompt_input_primitive: PromptNode, pty_terminal_node: AgentNode, worktree_card: WorktreeCard, markdown_block: MarkdownBlock };
+const nodeTypes = { prompt_input_primitive: PromptNode, pty_terminal_node: AgentNode, worktree_card: WorktreeCard, markdown_block: MarkdownBlock, struct_block: StructBlock, zone: ZoneFrame };
 
 /** A hierarchy or reference line. Selecting it shows × to cut the link (same path as the Delete key). */
 function LinkEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, markerEnd, style, selected }: EdgeProps) {
@@ -56,10 +59,13 @@ function LinkEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targ
     </>
   );
 }
-const edgeTypes = { link: LinkEdge };
+const edgeTypes = { link: LinkEdge, arrow: ArrowEdge };
 // every line points from its source to its target
 export const ARROW = { type: MarkerType.ArrowClosed, width: 16, height: 16 };
 export const MIN_ZOOM = 0.15;
+const MULTI_SELECT = ["Shift", "Control", "Meta"];
+// the playbook picked on each canvas (by `root|scope`), kept while the app runs
+const pickedBooks = new Map<string, DocFile | null>();
 const MAX_ZOOM = 2;
 const snap = (v: number) => Math.round(v / GRID) * GRID;
 
@@ -68,11 +74,14 @@ const normalize = (n: CanvasNode): CanvasNode => {
   const position = { x: snap(n.position.x), y: snap(n.position.y) };
   if (n.type === "pty_terminal_node") {
     // a dragged size is kept (within limits); older canvases only have a preset
+    if (n.data.compact) return { ...n, position, ...COMPACT_SIZE, deletable: false };
     const preset = TERM_SIZES[n.data.size ?? "M"];
     return { ...n, position, ...clampAgentSize(n.width ?? preset.width, n.height ?? preset.height), deletable: false };
   }
-  if (n.type === "worktree_card") return { ...n, position, ...CARD_SIZE, deletable: false };
+  if (n.type === "worktree_card") return { ...n, position, ...(n.data.compact ? { width: CARD_COMPACT.width, height: n.height ?? CARD_COMPACT.height } : CARD_SIZE), deletable: false };
   if (n.type === "markdown_block") return { ...n, position, ...MD_SIZE };
+  if (n.type === "struct_block") return { ...n, position, width: n.width ?? BLOCK_SIZE.width, height: n.height ?? BLOCK_SIZE.height };
+  if (n.type === "zone") return { ...n, position, width: n.width ?? ZONE_SIZE.width, height: n.height ?? ZONE_SIZE.height, zIndex: ZONE_Z };
   return { ...n, position, width: undefined, height: undefined };
 };
 
@@ -181,11 +190,12 @@ export function CanvasControls({ onOpenSettings }: { onOpenSettings?: () => void
  * - worktree canvas (`scope` = a worktree): that worktree's agent block plus free prompt blocks
  * Each saves its own layout.
  */
-export function Canvas({ root, scope, onNewAgent, onOpenSettings }: {
+export function Canvas({ root, scope, onNewAgent, onOpenSettings, onFull }: {
   root: string;
   scope: string;
   onNewAgent: (opts?: { parentPath?: string }) => void;
   onOpenSettings?: () => void;
+  onFull?: () => void; // this agent in full screen instead of its canvas
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<CanvasNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<CanvasEdge>([]);
@@ -216,7 +226,7 @@ export function Canvas({ root, scope, onNewAgent, onOpenSettings }: {
       const state: CanvasStateSchema | null = saved ? JSON.parse(saved) : null;
       if (state) {
         setNodes((state.nodes as CanvasNode[]).map(normalize));
-        setEdges(state.edges.map((e) => ({ ...e, animated: true, markerEnd: ARROW })));
+        setEdges(state.edges.map((e) => (e.data?.kind === "arrow" ? { ...e, type: "arrow", markerEnd: ARROW, data: { ...e.data, editing: false } } : { ...e, animated: true, markerEnd: ARROW })));
         setViewport(state.viewport);
       }
       needsFit.current = !state;
@@ -225,6 +235,7 @@ export function Canvas({ root, scope, onNewAgent, onOpenSettings }: {
     }).catch(setError);
   }, [root, canvasKey]);
 
+  const dropped = useRef(new Map<string, CanvasNode>());
   // Keep exactly one mirrored node per worktree (a card here, or the agent block inside a worktree).
   useEffect(() => {
     if (!loaded) return;
@@ -233,6 +244,8 @@ export function Canvas({ root, scope, onNewAgent, onOpenSettings }: {
       // free blocks (prompt, markdown) stay; a mirrored block stays while its worktree exists and it's the
       // right kind (a canvas saved before the Maestro became an agent block has a card for it)
       const kept = ns.filter((n) => !mirrors(n) || worktrees.some((w) => w.path === pathOf(n) && kind(w) === n.type));
+      // a block whose worktree drops out of the list for a moment (a refresh) comes back where it was
+      for (const n of ns) if (mirrors(n) && !kept.includes(n)) dropped.current.set(`${n.type}|${pathOf(n)}`, n);
       const have = new Set(kept.filter(mirrors).map(pathOf));
       // first grid slot no block already covers (cards get moved around, so "the next index" may be taken)
       const taken = [...kept];
@@ -249,6 +262,12 @@ export function Canvas({ root, scope, onNewAgent, onOpenSettings }: {
       const added = worktrees
         .filter((w) => !have.has(w.path))
         .map((w): CanvasNode => {
+          const back = dropped.current.get(`${kind(w)}|${w.path}`);
+          if (back) {
+            dropped.current.delete(`${kind(w)}|${w.path}`);
+            taken.push(back);
+            return back;
+          }
           if (kind(w) === "pty_terminal_node") {
             // on the Maestro canvas it keeps the card_ id, so lines and links treat it like any card
             const block: CanvasNode = { id: hub ? `card_${w.path}` : `term_${w.path}`, type: "pty_terminal_node", position: hub ? freeSlot() : { x: 360, y: 0 }, ...TERM_SIZES.M, deletable: false, data: { worktreePath: w.path, branchName: w.branch } };
@@ -295,14 +314,67 @@ export function Canvas({ root, scope, onNewAgent, onOpenSettings }: {
         activeThemeId: "theme_default_dark",
         viewport: getViewport(),
         tree: 1,
-        nodes: nodes.map(({ id, type, position, width, height, data }) => ({ id, type, position, width, height, data }) as CanvasStateSchema["nodes"][number]),
+        nodes: nodes.map(({ id, type, position, width, height, data, parentId }) => ({ id, type, position, width, height, data, parentId }) as CanvasStateSchema["nodes"][number]),
         // Maestro lines aren't saved here: they're drawn from the Maestro's workers
-        edges: edges.filter((e) => e.data?.kind !== "orchestrates").map(({ id, source, target, data }) => ({ id, source, target, data })),
+        edges: edges
+          .filter((e) => e.data?.kind !== "orchestrates")
+          .map(({ id, source, target, sourceHandle, targetHandle, data }) => ({ id, source, target, sourceHandle, targetHandle, data: data && { ...data, editing: undefined } })),
       };
       ipc.saveCanvas(root, canvasKey, JSON.stringify(state, null, 2)).catch(setError);
+      // each settled state is an undo step (selection and viewport alone don't count)
+      const key = JSON.stringify([state.nodes, state.edges]);
+      const h = history.current;
+      if (h.at < 0 || h.steps[h.at].key !== key) {
+        h.steps = [...h.steps.slice(0, h.at + 1), { key, nodes, edges }].slice(-100);
+        h.at = h.steps.length - 1;
+      }
     }, 500);
     return () => clearTimeout(t);
   }, [loaded, nodes, edges, viewTick]);
+
+  // Ctrl+Z / Ctrl+Shift+Z (Ctrl+Y): steps back and forth through this canvas's blocks and lines.
+  // Links kept by the backend (workers, references) are drawn from it, so they aren't undone here.
+  const history = useRef<{ steps: { key: string; nodes: CanvasNode[]; edges: CanvasEdge[] }[]; at: number }>({ steps: [], at: -1 });
+  const focused = useRef(false); // the last click landed on this canvas (several can be open in splits)
+  useEffect(() => {
+    const onDown = (e: PointerEvent) => (focused.current = !!flowRef.current?.contains(e.target as Node));
+    const onKey = (e: KeyboardEvent) => {
+      if (!focused.current || !(e.ctrlKey || e.metaKey)) return;
+      const t = e.target as HTMLElement;
+      if (t.closest("input, textarea, [contenteditable], .monaco-editor, .xterm")) return;
+      const k = e.key.toLowerCase();
+      const dir = k === "z" ? (e.shiftKey ? 1 : -1) : k === "y" ? 1 : 0;
+      const h = history.current;
+      const step = h.steps[h.at + dir];
+      if (!dir || !step) return;
+      e.preventDefault();
+      h.at += dir;
+      setNodes(step.nodes);
+      setLoadGen((g) => g + 1); // the worktree sync puts back an agent block or card the older step lacks
+      // Maestro lines come from the backend: keep the current ones
+      setEdges((es) => [...es.filter((x) => x.data?.kind === "orchestrates"), ...step.edges.filter((x) => x.data?.kind !== "orchestrates")]);
+    };
+    window.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, []);
+
+  // Ctrl held: the empty canvas shows a hand (a drag pans instead of selecting)
+  useEffect(() => {
+    const set = (e: KeyboardEvent) => flowRef.current?.toggleAttribute("data-pan", e.ctrlKey);
+    const off = () => flowRef.current?.removeAttribute("data-pan");
+    window.addEventListener("keydown", set);
+    window.addEventListener("keyup", set);
+    window.addEventListener("blur", off);
+    return () => {
+      window.removeEventListener("keydown", set);
+      window.removeEventListener("keyup", set);
+      window.removeEventListener("blur", off);
+    };
+  }, []);
 
   // Ctrl+wheel (and trackpad pinch, which arrives as ctrl+wheel) zooms anywhere, even over a block's
   // scrolling chat; plain wheel scrolls blocks / pans the canvas. Capture phase beats the block and
@@ -327,6 +399,31 @@ export function Canvas({ root, scope, onNewAgent, onOpenSettings }: {
     return () => el.removeEventListener("wheel", onWheel, { capture: true });
   }, []);
 
+  const barKey = `${root}|${scope}`;
+  const [barOpen, setBarOpenState] = useState(() => openBars.get(barKey) ?? false);
+  const setBarOpen = (v: boolean) => {
+    openBars.set(barKey, v);
+    setBarOpenState(v);
+  };
+  // what's selected, as this canvas's agent sees it: `maestro selection` reads it, the chat box can send it along
+  const titleOf = (id?: string) => {
+    const n = id ? nodes.find((x) => x.id === id) : undefined;
+    return n && (n.type === "struct_block" || n.type === "zone" || n.type === "markdown_block") ? n.data.title || "이름 없음" : "";
+  };
+  const arrowsFrom = (id: string) => edges.filter((e) => e.data?.kind === "arrow" && e.source === id).map((e) => titleOf(e.target) + (e.data?.label ? ` (${e.data.label})` : "")).filter(Boolean);
+  const picked: Picked[] = nodes.flatMap((n): Picked[] => {
+    if (!n.selected) return [];
+    if (n.type === "struct_block") return [{ kind: "block", title: n.data.title || "이름 없음", body: n.data.body ?? "", area: titleOf(n.parentId) || undefined, to: arrowsFrom(n.id) }];
+    if (n.type === "zone") return [{ kind: "area", title: n.data.title || "영역", holds: nodes.filter((c) => c.parentId === n.id).map((c) => titleOf(c.id)).filter(Boolean), to: arrowsFrom(n.id) }];
+    if (n.type === "markdown_block") return [{ kind: "document", title: n.data.title, path: n.data.path }];
+    if (n.type === "prompt_input_primitive") return [{ kind: "prompt", name: n.data.label }];
+    const w = worktrees.find((w) => w.path === pathOf(n));
+    return w && w.path !== scope ? [{ kind: "agent", name: w.name, branch: w.branch, path: w.path }] : [];
+  });
+  const pickedKey = JSON.stringify(picked);
+  useEffect(() => void ipc.setCanvasSelection(scope, picked).catch(() => {}), [pickedKey, scope]);
+  useEffect(() => () => void ipc.setCanvasSelection(scope, []).catch(() => {}), [scope]);
+  const boxing = useRef(false); // a selection box is being dragged
   const promptCount = useRef(0);
   const addPrompt = () => {
     const s = screenToFlowPosition({ x: 420, y: 160 });
@@ -337,6 +434,103 @@ export function Canvas({ root, scope, onNewAgent, onOpenSettings }: {
       { id: `prompt_${Date.now()}`, type: "prompt_input_primitive", position: p, data: { label: `프롬프트 ${promptCount.current}`, attachedContextPaths: [] } },
     ]);
   };
+
+  // ---- structure drawing: blocks, areas (React Flow parents) and arrows, all kept with the canvas
+  const [editing, setEditing] = useState<string | null>(null);
+  const editNode = editing ? (nodes.find((n) => n.id === editing && (n.type === "struct_block" || n.type === "zone")) as StructNode | ZoneNode | undefined) : undefined;
+  const { getInternalNode, updateNodeData, updateEdgeData } = useReactFlow<CanvasNode, CanvasEdge>();
+  // the middle of what's on screen, for a new block or area
+  const viewMiddle = (size: { width: number; height: number }) => {
+    const r = flowRef.current?.getBoundingClientRect();
+    const c = screenToFlowPosition({ x: (r?.left ?? 0) + (r?.width ?? 800) / 2, y: (r?.top ?? 0) + (r?.height ?? 600) / 2 });
+    return { x: snap(c.x - size.width / 2), y: snap(c.y - size.height / 2) };
+  };
+  const addStruct = (type: "struct_block" | "zone") => {
+    const id = `${type === "zone" ? "zone" : "block"}_${Date.now()}`;
+    const size = type === "zone" ? ZONE_SIZE : BLOCK_SIZE;
+    const n = (type === "zone"
+      ? { id, type, position: viewMiddle(size), ...size, zIndex: ZONE_Z, data: { title: "" }, selected: true }
+      : { id, type, position: viewMiddle(size), ...size, data: { title: "" }, selected: true }) as CanvasNode;
+    // areas first, so they lie under what's already there; the new item alone is selected
+    setNodes((ns) => (type === "zone" ? [n, ...ns.map((x) => ({ ...x, selected: false }))] : [...ns.map((x) => ({ ...x, selected: false })), n]));
+    setEditing(id); // name it right away
+  };
+  const nestable = (n: CanvasNode) => n.type === "struct_block" || n.type === "zone" || n.type === "markdown_block";
+  const absOf = (id: string) => getInternalNode(id)?.internals.positionAbsolute ?? { x: 0, y: 0 };
+  const sizeOf = (n: CanvasNode) => ({ w: n.measured?.width ?? n.width ?? 0, h: n.measured?.height ?? n.height ?? 0 });
+  // React Flow draws a parent before its children: parents first, otherwise the order stays
+  const parentsFirst = (ns: CanvasNode[]) => {
+    const byId = new Map(ns.map((n) => [n.id, n]));
+    const depth = (n: CanvasNode) => {
+      let d = 0;
+      for (let p = n.parentId; p && d < 50; p = byId.get(p)?.parentId) d++;
+      return d;
+    };
+    return [...ns].sort((a, b) => depth(a) - depth(b));
+  };
+  // a block or area let go over an area goes inside it (the innermost one under its middle); let go outside, it comes out
+  const nest = (dragged: CanvasNode[]) =>
+    setNodes((ns) => {
+      let next = ns;
+      for (const d of dragged.filter(nestable)) {
+        const byId = new Map(next.map((n) => [n.id, n]));
+        const inside = (z: CanvasNode) => {
+          for (let p: string | undefined = z.id; p; p = byId.get(p)?.parentId) if (p === d.id) return true;
+          return false;
+        };
+        const a = absOf(d.id), s = sizeOf(d);
+        const cx = a.x + s.w / 2, cy = a.y + s.h / 2;
+        const host = next
+          .filter((z) => z.type === "zone" && !inside(z))
+          .filter((z) => {
+            const za = absOf(z.id), zs = sizeOf(z);
+            return cx > za.x && cx < za.x + zs.w && cy > za.y && cy < za.y + zs.h;
+          })
+          .sort((p, q) => sizeOf(p).w * sizeOf(p).h - sizeOf(q).w * sizeOf(q).h)[0];
+        if ((host?.id ?? undefined) === (d.parentId ?? undefined)) continue;
+        const base = host ? absOf(host.id) : { x: 0, y: 0 };
+        next = next.map((n) => (n.id === d.id ? { ...n, parentId: host?.id, position: { x: snap(a.x - base.x), y: snap(a.y - base.y) } } : n));
+      }
+      return next === ns ? ns : parentsFirst(next);
+    });
+  // deleting an area keeps what's inside it: React Flow would take the children along, so they move up a level first
+  const onBeforeDelete = async ({ nodes: del, edges: delEdges }: { nodes: CanvasNode[]; edges: CanvasEdge[] }) => {
+    const kept = new Set(del.filter((n) => !n.selected && n.parentId).map((n) => n.id));
+    if (!kept.size) return true;
+    const gone = new Set(del.filter((n) => !kept.has(n.id)).map((n) => n.id));
+    setNodes((ns) => {
+      const byId = new Map(ns.map((n) => [n.id, n]));
+      return parentsFirst(
+        ns.map((n) => {
+          if (!n.parentId || !gone.has(n.parentId)) return n;
+          let p: string | undefined = n.parentId;
+          while (p && gone.has(p)) p = byId.get(p)?.parentId;
+          const a = absOf(n.id), base = p ? absOf(p) : { x: 0, y: 0 };
+          return { ...n, parentId: p, position: { x: a.x - base.x, y: a.y - base.y } };
+        }),
+      );
+    });
+    return { nodes: del.filter((n) => gone.has(n.id)), edges: delEdges.filter((e) => e.selected || (!kept.has(e.source) && !kept.has(e.target))) };
+  };
+
+  // structure this canvas's agent drew (`maestro draw`): taken when it arrives, and on opening if it came while closed
+  const live = useRef({ nodes, edges });
+  live.current = { nodes, edges };
+  useEffect(() => {
+    if (!loaded) return;
+    const take = () =>
+      ipc.takeCanvasDrawings(scope).then((list) => {
+        if (!list.length) return;
+        let { nodes: ns, edges: es } = live.current;
+        for (const d of list) ({ nodes: ns, edges: es } = applyDrawing(d, ns, es));
+        setNodes(ns);
+        setEdges(es);
+        requestAnimationFrame(() => fitView({ padding: 0.15, maxZoom: 1, duration: motionMs(useSettings.getState()) * 1.5 }));
+      }, setError);
+    void take();
+    const off = listen<string>("maestro://draw", (e) => e.payload.toLowerCase() === scope.toLowerCase() && void take());
+    return () => void off.then((f) => f());
+  }, [loaded, scope]);
 
   // ---- Maestro canvas lines, drawn from agent settings (the backend is the truth):
   //   parent card → worker card (hierarchy), Markdown block → card (reference)
@@ -462,7 +656,15 @@ export function Canvas({ root, scope, onNewAgent, onOpenSettings }: {
   }, [loadGen, hierKey]);
 
   // Markdown dropped from the library or the file tree → a Markdown block where it landed
-  const [libraryOpen, setLibraryOpen] = useState(false);
+  // what drops down under the island: the documents, or (on a Maestro's canvas) the playbooks
+  const [panel, setPanel] = useState<"docs" | "books" | null>(null);
+  const toggle = (p: "docs" | "books") => setPanel(panel === p ? null : p);
+  // the playbook the Maestro is told to follow (null = it picks), kept per canvas for the session
+  const [book, setBookState] = useState(() => pickedBooks.get(barKey) ?? null);
+  const setBook = (b: DocFile | null) => {
+    pickedBooks.set(barKey, b);
+    setBookState(b);
+  };
   const onDragOver = (e: React.DragEvent) => {
     if (!e.dataTransfer.types.includes(MD_MIME)) return;
     e.preventDefault();
@@ -488,10 +690,17 @@ export function Canvas({ root, scope, onNewAgent, onOpenSettings }: {
   };
 
   // prompt → agent: a pipe kept with the canvas; everything else is a hierarchy or reference link (agent settings)
+  const drawn = (id: string | null) => {
+    const t = nodes.find((n) => n.id === id)?.type;
+    return t === "struct_block" || t === "zone";
+  };
+  // an arrow: either end is a structure block or an area
+  const isArrow = (c: Connection | { source: string; target: string }) => c.source !== c.target && (drawn(c.source) || drawn(c.target));
   const isPipe = (c: Connection | { source: string; target: string }) =>
     nodes.find((n) => n.id === c.source)?.type === "prompt_input_primitive" && nodes.find((n) => n.id === c.target)?.type === "pty_terminal_node";
   const onConnect = useCallback(
     (c: Connection) => {
+      if (isArrow(c)) return setEdges((es) => addEdge({ ...c, id: `arrow_${Date.now()}`, type: "arrow", markerEnd: ARROW, data: { kind: "arrow" as const } }, es));
       if (isPipe(c)) return setEdges((es) => addEdge({ ...c, animated: true, markerEnd: ARROW, data: { kind: "command_pipe" as const } }, es));
       const l = linkFor(c.source, c.target);
       if (l?.kind === "child") act(ipc.linkWorktrees(root, l.parent, l.child));
@@ -499,7 +708,7 @@ export function Canvas({ root, scope, onNewAgent, onOpenSettings }: {
     },
     [setEdges, worktrees, nodes],
   );
-  const isValidConnection: IsValidConnection = (c) => isPipe(c) || !!linkFor(c.source, c.target);
+  const isValidConnection: IsValidConnection = (c) => isArrow(c) || isPipe(c) || !!linkFor(c.source, c.target);
 
   return (
     <ReactFlow
@@ -508,7 +717,10 @@ export function Canvas({ root, scope, onNewAgent, onOpenSettings }: {
       nodeTypes={nodeTypes}
       edgeTypes={edgeTypes}
       onNodesChange={onNodesChange}
-      onEdgesChange={onEdgesChange}
+      // a selection box takes blocks only: lines are picked by clicking them
+      onEdgesChange={(cs) => onEdgesChange(boxing.current ? cs.filter((c) => c.type !== "select") : cs)}
+      onSelectionStart={() => (boxing.current = true)}
+      onSelectionEnd={() => (boxing.current = false)}
       onConnect={onConnect}
       isValidConnection={isValidConnection}
       connectionMode={ConnectionMode.Loose}
@@ -537,8 +749,19 @@ export function Canvas({ root, scope, onNewAgent, onOpenSettings }: {
           for (const w of worktrees.filter((w) => w.refs.some((r) => same(r, path)))) act(ipc.setRef(root, w.path, path, false));
         }
       }}
-      onNodeDragStop={() => setLayoutTick((t) => t + 1)}
-      onNodeDoubleClick={(_, n) => n.type === "worktree_card" && select(n.data.worktreePath, true)}
+      onNodeDragStop={(_, _node, dragged) => {
+        setLayoutTick((t) => t + 1);
+        nest(dragged);
+      }}
+      onBeforeDelete={onBeforeDelete}
+      onEdgeDoubleClick={(_, e) => e.data?.kind === "arrow" && updateEdgeData(e.id, { editing: true })}
+      onNodeClick={(_, n) => n.type === "pty_terminal_node" && n.data.compact && pathOf(n) === scope && setBarOpen(!barOpen)}
+      onNodeDoubleClick={(e, n) => {
+        if (n.type === "worktree_card") select(n.data.worktreePath, true);
+        else if (n.type === "struct_block" || n.type === "zone") setEditing(n.id);
+        // this canvas's agent block, by its header or folded chip (not inside the chat, where a double click selects a word)
+        else if (n.type === "pty_terminal_node" && pathOf(n) === scope && (e.target as HTMLElement).closest(".node-agent > header, .agent-chip")) onFull?.();
+      }}
       zoomOnDoubleClick={false}
       onMoveEnd={() => setViewTick((t) => t + 1)}
       snapToGrid
@@ -550,30 +773,61 @@ export function Canvas({ root, scope, onNewAgent, onOpenSettings }: {
       zoomOnPinch={false}
       zoomActivationKeyCode={null}
       panOnScroll
+      // left drag on empty canvas draws a selection box, Shift/Ctrl-click adds to it; the middle button, or a
+      // left drag with Ctrl held, pans
+      panOnDrag={[1]}
+      panActivationKeyCode="Control"
+      selectionOnDrag
+      selectionMode={SelectionMode.Partial}
+      multiSelectionKeyCode={MULTI_SELECT}
+      // the middle button would otherwise start the browser's autoscroll
+      onMouseDownCapture={(e) => e.button === 1 && e.preventDefault()}
       deleteKeyCode={["Delete"]}
       colorMode={isLightTheme(theme) ? "light" : "dark"}
       proOptions={{ hideAttribution: true }}
     >
-      <Background gap={GRID} />
+      <CanvasBackground />
       <CanvasControls onOpenSettings={onOpenSettings} />
       <ViewMap nodes={nodes} />
-      {libraryOpen && (
-        <Panel position="top-right">
-          <LibraryPanel root={root} onClose={() => setLibraryOpen(false)} />
-        </Panel>
-      )}
+      {/* this canvas's own agent, spoken to from the bottom: the logo button (or its folded block) opens and closes it */}
+      <Panel position="bottom-center" className="agent-bar-panel">
+        {barOpen && <AgentBar key={scope} path={scope} picked={picked} onUnpick={() => setNodes((ns) => ns.map((n) => (n.selected ? { ...n, selected: false } : n)))} onClose={() => setBarOpen(false)} onFull={onFull} book={self?.isMaestro ? book : null} onBook={setBook} />}
+        <BarButton open={barOpen} onClick={() => setBarOpen(!barOpen)} />
+      </Panel>
       <Panel position="top-left">
         {/* the same toolbar on every agent canvas (the Maestro's and each worktree's) */}
         {/* no name here: the tab above already says which canvas this is */}
         <div className="canvas-tools">
           <button className="primary" title="이 에이전트의 워커로 새 워크트리 만들기" onClick={() => onNewAgent({ parentPath: scope })}>+ 워커</button>
           <button title="에이전트 블록에 이어서 지시를 보내는 블록" onClick={addPrompt}>+ 프롬프트 블록</button>
-          <button title="등록한 폴더의 마크다운을 블록으로 끌어오기" data-on={libraryOpen || undefined} onClick={() => setLibraryOpen(!libraryOpen)}>보관함</button>
+          <span className="canvas-tools-sep" />
+          <button title="구조 블록: 이름과 마크다운 내용 (더블클릭으로 열기)" onClick={() => addStruct("struct_block")}>+ 블록</button>
+          <button title="영역: 블록이나 다른 영역을 끌어 넣어 묶어요" onClick={() => addStruct("zone")}>+ 영역</button>
+          <span className="canvas-tools-sep" />
+          <button title="Maestro 문서를 끌어와 참조 블록으로 (파일은 복사하지 않아요)" data-on={panel === "docs" || undefined} onClick={() => toggle("docs")}>문서</button>
+          {self?.isMaestro && (
+            <button title="마에스트로가 따를 플레이북 (자동이면 스스로 골라요)" data-on={panel === "books" || undefined} onClick={() => toggle("books")}>
+              플레이북{book ? ` · ${book.title}` : ""}
+            </button>
+          )}
           <Guide
             key={canvasKey}
             text="블록의 점을 다른 블록으로 끌어 연결해요: 에이전트 → 워커, 마크다운 → 에이전트(참조), 프롬프트 → 에이전트 · 빈 곳에 놓으면 새 워커 · 선을 눌러 × 로 끊기 · 블록 오른쪽 아래 모서리를 끌어 크기 조절 · 워커 카드를 더블클릭하면 그 에이전트 캔버스로"
           />
         </div>
+        {/* the documents drop down under the toolbar, every category folded */}
+        {panel === "docs" && <LibraryPanel onClose={() => setPanel(null)} />}
+        {panel === "books" && (
+          <PlaybookPanel
+            value={book}
+            onPick={(b) => {
+              setBook(b);
+              if (!barOpen) setBarOpen(true); // the pick is used from the chat box: bring it up
+            }}
+            onClose={() => setPanel(null)}
+          />
+        )}
+        {editNode && <StructEditor node={editNode} onChange={(d) => updateNodeData(editNode.id, d)} onClose={() => setEditing(null)} />}
       </Panel>
     </ReactFlow>
   );

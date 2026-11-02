@@ -435,14 +435,16 @@ const MAESTRO_HINT: &str = "You are running inside Maestro, a desktop app that r
 A `maestro` command is on your PATH: `maestro --help` lists it. With it you can see the other worktrees and their agents (`maestro worktree list`), \
 start a new worktree with its own agent for a side task (`maestro worktree create --name … --prompt …`), send another agent instructions (`maestro send --to … --text …`), \
 and read its status and latest answer (`maestro read --to …`). Use it when the user asks you to delegate, parallelize, or coordinate with other agents. \
-`maestro whoami` also shows your parent, your workers, and the reference documents the user linked to you on the canvas: read those documents before starting work.";
+`maestro whoami` also shows your parent, your workers, and the reference documents the user linked to you on the canvas: read those documents before starting work. When the user says \"the selected ones\", \"these\", or the like, run `maestro selection` first: it lists the blocks (agents, documents, prompt blocks, and drawn structure: blocks with their notes, areas with what they hold, arrows) they selected on your canvas.";
 
-/// Extra brief for the project's Maestro agent (role "maestro").
+/// Extra brief for the project's Maestro agent (role "maestro"): what it can do, not how it should coordinate.
+/// The how (delegate or not, how to split, which personas) is the playbooks' (`~/.maestro/playbooks`), so the
+/// user can change it by editing them.
 const COORDINATOR_HINT: &str = "You are this project's Maestro: the coordinator. You run on the project folder itself (its main branch), not in a worktree. \
-Your workers are the worktrees linked to you (`maestro whoami` lists them; `maestro worktree list` marks them). Prefer delegating implementation: \
-split the request into self-contained tasks (target, change, constraints, what the worker may edit, how to check it's done), \
-give each to a worker (`maestro worktree create --name … --prompt …` makes a new linked worker, `maestro send --to …` instructs an existing one), \
-follow up with `maestro read --to …` (when a worker finishes a turn, Maestro also pastes a `[maestro] 워커 … 완료` note with its answer into your prompt), then review and merge their branches here. Don't edit code yourself unless the user asks.";
+Your workers are the worktrees linked to you (`maestro whoami` lists them; `maestro worktree list` marks them). \
+`maestro worktree create --name … --prompt …` makes a new linked worker, `maestro send --to …` instructs an existing one, \
+`maestro ref add --to … --path …` gives a worker a persona or document, `maestro draw --file …` draws a structure (areas, blocks, arrows) on your canvas for the user to see, `maestro read --to …` reads a worker's conversation \
+(when a worker finishes a turn, Maestro also pastes a `[maestro] 워커 … 완료` note with its answer into your prompt). Finished branches are merged here.";
 
 /// Claude Code's command line (Antigravity's is in antigravity.rs).
 /// Everything Maestro tells an agent up front: the `maestro` CLI, the coordinator role, its persona and
@@ -454,6 +456,20 @@ pub fn system_brief(home: &Path, meta: &AgentMeta) -> String {
         out = format!("{out}\n\n{COORDINATOR_HINT}");
         if let Some(base) = &meta.base_branch {
             out = format!("{out}\n\nBase branch: `{base}`. New workers branch off it (`maestro worktree create` does this by default); merge finished work into `{base}`, not anywhere else.");
+        }
+        // the coordination procedures kept in Maestro (the sidebar's 플레이북 tab)
+        let books = crate::library::scan(&crate::library::playbooks_dir(home));
+        let personas = crate::library::personas_dir(home).to_string_lossy().replace('\\', "/");
+        if books.is_empty() {
+            out = format!("{out}\n\nThere are no playbooks: decide yourself how to coordinate. Personas for workers are in `{personas}`.");
+        } else {
+            let list: Vec<String> = books.iter().map(|b| format!("- {} ({})", b.title, b.path)).collect();
+            out = format!(
+                "{out}\n\n## Playbooks\n\nHow you coordinate (delegate or do it yourself, how to split the work, which personas the workers get) is set by these playbooks. \
+Before acting on a request, read the one that fits and follow it; if none fits, follow 기본 지휘 (default.md) when it's there. \
+A playbook's 구성 table names the persona files to attach to the workers you create (`~/.maestro/personas` is `{personas}`).\n\n{}",
+                list.join("\n")
+            );
         }
     }
     let (personas, docs): (Vec<&String>, Vec<&String>) = meta.refs.iter().partition(|r| crate::library::is_persona(home, r));
@@ -992,13 +1008,15 @@ mod tests {
     #[test]
     fn brief_carries_persona_and_references() {
         let home = std::env::temp_dir().join(format!("maestro-brief-{}", std::process::id()));
-        crate::library::seed_personas(&home);
+        crate::library::seed(&home);
         let persona = crate::library::personas_dir(&home).join("reviewer.md").to_string_lossy().replace('\\', "/");
         let doc = home.join("spec.md");
         std::fs::write(&doc, "# 결제 스펙\n...").unwrap();
         let m = AgentMeta { refs: vec![persona, doc.to_string_lossy().replace('\\', "/")], role: Some("maestro".into()), ..Default::default() };
         let b = system_brief(&home, &m);
         assert!(b.contains(COORDINATOR_HINT));
+        // the coordination policy comes from the playbooks, with the default one listed
+        assert!(b.contains("## Playbooks") && b.contains("- 기본 지휘 ("));
         assert!(b.contains("## Your persona") && b.contains("# 리뷰어"));
         assert!(b.contains("- 결제 스펙 ("));
         assert_eq!(system_brief(&home, &AgentMeta::default()), MAESTRO_HINT);

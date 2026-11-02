@@ -36,6 +36,15 @@ export type PromptInputBlockData = {
   lastSentPrompt?: string;
 };
 
+/** A block selected on an agent canvas, as that agent sees it (`maestro selection`, the chat box's chip). */
+export type Picked =
+  | { kind: "agent"; name: string; branch: string; path: string }
+  | { kind: "document"; title: string; path: string }
+  | { kind: "prompt"; name: string }
+  // structure drawn on the canvas: a block (name + Markdown notes), an area holding blocks, and where arrows go
+  | { kind: "block"; title: string; body: string; area?: string; to: string[] }
+  | { kind: "area"; title: string; holds: string[]; to: string[] };
+
 export type TerminalSize = "S" | "M" | "L";
 
 // Agent status lives in the store, keyed by worktreePath.
@@ -44,6 +53,8 @@ export type PtyTerminalNodeData = {
   branchName: string;
   size?: TerminalSize; // only presets, no free resizing
   view?: AgentView; // same conversation, two renderings
+  compact?: boolean; // shown as a small chip; its chat box comes up at the canvas bottom when selected
+  full?: { width: number; height: number }; // the window size to go back to from compact
 };
 
 export type AgentView = "chat" | "cli";
@@ -51,15 +62,20 @@ export type AgentView = "chat" | "cli";
 export type PromptFlowNode = Node<PromptInputBlockData, "prompt_input_primitive">;
 export type TerminalFlowNode = Node<PtyTerminalNodeData, "pty_terminal_node">;
 /** Project canvas: one summary card per worktree; clicking it opens that worktree's canvas. */
-export type WorktreeCardNode = Node<{ worktreePath: string }, "worktree_card">;
+export type WorktreeCardNode = Node<{ worktreePath: string; compact?: boolean }, "worktree_card">;
 /** A Markdown file placed on a canvas; shows only its top `#` heading for now. */
 export type MarkdownNode = Node<{ path: string; title: string }, "markdown_block">;
-export type CanvasNode = PromptFlowNode | TerminalFlowNode | WorktreeCardNode | MarkdownNode;
+/** A structure block (FigJam-like): a name and, opened by a double click, Markdown notes kept with the canvas. */
+export type StructNode = Node<{ title: string; body?: string }, "struct_block">;
+/** An area that holds blocks and other areas (React Flow parent); dragging a block into it puts it inside. */
+export type ZoneNode = Node<{ title: string }, "zone">;
+export type CanvasNode = PromptFlowNode | TerminalFlowNode | WorktreeCardNode | MarkdownNode | StructNode | ZoneNode;
 /**
  * command_pipe: prompt block → agent block (saved with the canvas)
  * orchestrates: parent → worker worktree, reference: Markdown block → worktree (both drawn from agent settings)
+ * arrow: a drawn arrow between structure blocks / areas (saved with the canvas, may carry a label)
  */
-export type CanvasEdge = Edge<{ kind: "command_pipe" | "orchestrates" | "reference" }>;
+export type CanvasEdge = Edge<{ kind: "command_pipe" | "orchestrates" | "reference" | "arrow"; label?: string; editing?: boolean }>;
 
 export interface CanvasStateSchema {
   version: "1.0.0";
@@ -69,8 +85,8 @@ export interface CanvasStateSchema {
   viewport: { x: number; y: number; zoom: number };
   /** 1 = laid out as a tree at least once; a canvas saved before that gets arranged once on load */
   tree?: number;
-  nodes: Array<Pick<CanvasNode, "id" | "type" | "position" | "width" | "height" | "data">>;
-  edges: Array<Pick<CanvasEdge, "id" | "source" | "target" | "data">>;
+  nodes: Array<Pick<CanvasNode, "id" | "type" | "position" | "width" | "height" | "data" | "parentId">>;
+  edges: Array<Pick<CanvasEdge, "id" | "source" | "target" | "data" | "sourceHandle" | "targetHandle">>;
 }
 
 /** One transcript line: Claude stream-json events plus Maestro's own user_input / stderr / exit. */

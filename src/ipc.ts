@@ -1,21 +1,32 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { WS } from "./store";
-import type { Approval, ApprovalChoice, Branch, ChatEvent, CliStatus, Repo, WorktreeInfo } from "./types";
+import type { Drawing } from "./drawing";
+import type { Approval, ApprovalChoice, Branch, ChatEvent, CliStatus, Picked, Repo, WorktreeInfo } from "./types";
+/** A Markdown file in Maestro's documents or playbooks; `summary` is its first line of body text. */
+export type DocFile = { path: string; title: string; summary: string };
 
 export const b64ToBytes = (b64: string) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
 
 export const ipc = {
   listRepos: () => invoke<Repo[]>("list_repos"),
   addRepo: (path: string) => invoke<Repo>("add_repo", { path }),
+  repoState: (path: string) => invoke<"ready" | "empty" | "none">("repo_state", { path }),
+  initRepo: (path: string) => invoke<void>("init_repo", { path }),
   removeRepo: (root: string) => invoke<void>("remove_repo", { root }),
   listWorktrees: (projectRoot: string) => invoke<WorktreeInfo[]>("list_worktrees", { projectRoot }),
   /** existingBranch: check out branchName as it is instead of making it new from baseBranch */
   createAgent: (req: { projectRoot: string; adapterId: string; permissionMode: string; branchName: string; baseBranch: string; existingBranch: boolean; name: string; description: string; model: string }) =>
     invoke<WorktreeInfo>("create_agent", { req }),
-  listBranches: (projectRoot: string) => invoke<Branch[]>("list_branches", { projectRoot }),  libraryList: (projectRoot: string) =>
-    invoke<Array<{ folder: string; persona: boolean; files: Array<{ path: string; title: string }> }>>("library_list", { projectRoot }),
+  listBranches: (projectRoot: string) => invoke<Branch[]>("list_branches", { projectRoot }),
+  /** Maestro's documents: the personas, then each category (the same for every project) */
+  libraryList: () => invoke<Array<{ folder: string; persona: boolean; files: DocFile[] }>>("library_list"),
+  /** the playbooks (how the Maestro coordinates workers), as one folder */
+  playbookList: () => invoke<Array<{ folder: string; persona: boolean; files: DocFile[] }>>("playbook_list"),
+  docsCreate: (folder: string, name: string) => invoke<string>("docs_create", { folder, name }),
+  docsImport: (folder: string, files: string[]) => invoke<void>("docs_import", { folder, files }),
+  docsDelete: (path: string) => invoke<void>("docs_delete", { path }),
+  docsCategory: (name: string) => invoke<void>("docs_category", { name }),
   personaCreate: (name: string) => invoke<string>("persona_create", { name }),
-  librarySet: (projectRoot: string, folders: string[]) => invoke<void>("library_set", { projectRoot, folders }),
   mdTitle: (path: string) => invoke<string>("md_title", { path }),
   createMaestro: (req: { projectRoot: string; adapterId: string; permissionMode: string; model: string; baseBranch: string }) => invoke<WorktreeInfo>("create_maestro", { req }),
   attachAgent: (req: { projectRoot: string; worktreePath: string; adapterId: string; permissionMode: string; model: string }) => invoke<void>("attach_agent", { req }),
@@ -43,6 +54,10 @@ export const ipc = {
   fileMtime: (base: string, rel: string) => invoke<number>("file_mtime", { base, rel }),
   fileAtHead: (base: string, rel: string) => invoke<string>("file_at_head", { base, rel }),
   /** the projects on screen in this window, and after how many minutes away the others' idle agents stop (0 = never) */
+  /** the blocks selected on agent `owner`'s canvas, for `maestro selection` */
+  /** what the agent `owner` drew with `maestro draw` since its canvas last took it */
+  takeCanvasDrawings: (owner: string) => invoke<Drawing[]>("take_canvas_drawings", { owner }),
+  setCanvasSelection: (owner: string, items: Picked[]) => invoke<void>("set_canvas_selection", { owner, items }),
   setAway: (activeRoots: string[], minutes: number) => invoke<void>("set_away", { activeRoots, minutes }),
   slashCommands: (worktreePath: string) =>
     invoke<Array<{ name: string; description: string; source: string }>>("list_slash_commands", { worktreePath }),

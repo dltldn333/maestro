@@ -2,9 +2,9 @@
 title: 사이드바와 양쪽 패널 (숨기기, 너비 조절)
 area: ui
 status: done
-files: [src/App.tsx, src/Sidebar.tsx, src/RightPanel.tsx, src/styles.css]
+files: [src/App.tsx, src/Sidebar.tsx, src/RightPanel.tsx, src/styles.css, src/store.ts]
 related: [features/ui/window-frame.md, features/editor/file-explorer.md, features/canvas/canvas-controls.md]
-updated: 2026-11-01
+updated: 2026-11-03
 ---
 
 # 사이드바와 양쪽 패널
@@ -26,11 +26,13 @@ updated: 2026-11-01
 - 패널을 숨기면 그쪽 손잡이도 사라져요.
 
 **왼쪽 사이드바 내용**
+- 맨 위 `문서`·`플레이북` 줄: 누르면 포커스된 묶음이 다른 프로젝트로 바뀌듯 [시스템](system-tab.md)으로 바뀌고 그 보드를 보여 줘요. 지금 보이는 보드의 줄이 강조돼요.
+- 그 아래 `프로젝트` 머리줄: 누르면 프로젝트 목록을 접고 펴요(▸는 마우스를 올렸을 때나 접혀 있을 때만 보여요)(localStorage `maestro.projectsShut`). 오른쪽 `+`는 저장소 추가. 고른 폴더가 Git 저장소가 아니면 "git init을 하고 지금 파일로 첫 커밋을 만들까요?"를 묻고, 저장소지만 커밋이 없으면 첫 커밋만 만들지 물어요(워커 워크트리는 커밋에서 갈라져 나와야 해서요). 승낙하면 `init_repo` 후 추가해요.
 - 저장소마다 이름과 기본 브랜치, 그 아래 워크트리가 계층 순서로 나와요. 마에스트로가 먼저, 워커는 들여쓰기돼요. → [워커 계층](../orchestration/worker-hierarchy.md)
 - 워크트리 줄에 보이는 것:
   - 상태 점과 에이전트 로고
   - 마에스트로면 ♛와 굵은 이름(배경 강조는 없어요. 선택처럼 보여서 뺐어요)
-  - 상태 글자: "작업 중", "승인 대기"만 보여요. 대기와 꺼짐은 글자 없이 상태 점으로만 보여요(꺼짐은 대개 자리 비움으로 잠시 꺼진 것이라, 열면 다시 켜져요).
+  - 상태 글자는 "승인 대기"만 보여요. 작업 중·대기·꺼짐은 상태 점으로만 보여요.
 - 아래쪽에 설정 버튼이 있어요.
 
 ## 구현
@@ -44,7 +46,7 @@ updated: 2026-11-01
     - 너비 애니메이션을 꺼서 패널이 늦게 따라오지 않게 해요.
     - 스테이지의 포인터를 막아서 캔버스나 터미널이 움직임을 가로채지 않게 해요.
 - 손잡이는 shell 틈(10px)에 놓인 flex 항목이에요. 음수 margin으로 늘어나는 틈을 상쇄해요.
-- 사이드바 상태 글자: `STATUS_LABEL`(Sidebar.tsx). `IDLE`과 `TERMINATED`는 일부러 없어요.
+- 사이드바 상태 글자: `STATUS_LABEL`(Sidebar.tsx). 상태 글자는 일부러 비워 뒀어요(승인 대기만 따로 표시).
 
 ## 제약과 알려진 문제
 

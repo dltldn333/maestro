@@ -3,7 +3,8 @@ import { useShallow } from "zustand/react/shallow";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ipc } from "./ipc";
-import { insertAt, leaves, without, type Layout, type Side } from "./layout";
+import { useSettings } from "./settings";
+import { insertAt, leaves, withSizes, without, type Layout, type Side } from "./layout";
 import type { AgentStatus, Approval, CliStatus, Repo, WorktreeInfo } from "./types";
 
 export type Worktree = {
@@ -30,7 +31,13 @@ export type Worktree = {
  * `preview` (VS Code's preview tab): opened by a single click, replaced by the next one; editing, sending,
  * double-clicking it or what it shows makes it stay.
  */
-export type StageTab = ({ kind: "wt"; path: string } | { kind: "file"; base: string; rel: string; diff: boolean }) & { preview?: boolean };
+export type SystemView = "docs" | "playbooks";
+/**
+ * The "project" a group shows Maestro's own documents and playbooks under: it opens like any project (its own
+ * project tab, the group's other tabs parked until you come back) and files opened from it become its tabs.
+ */
+export const SYSTEM_ROOT = "maestro:system";
+export type StageTab = ({ kind: "wt"; path: string; layout?: "full" | "canvas" } | { kind: "file"; base: string; rel: string; diff: boolean }) & { preview?: boolean };
 type Editor = { base: string; rel: string; diff: boolean };
 /**
  * A tab group: one project (`root`), its tabs, and what it shows (`path`: the agent under the stage, null = the
@@ -96,6 +103,10 @@ type Store = {
   select: (path: string | null, pin?: boolean) => void;
   /** a file over the stage (in the group of its project); null takes it off the stage, its tab stays */
   openEditor: (e: Editor | null, pin?: boolean) => void;
+  /** the shares of a split's children in this window (the split named by its groups, joined by "+") */
+  setSplitSizes: (key: string, sizes: number[]) => void;
+  /** full screen or canvas for one worktree tab */
+  setTabLayout: (groupId: string, path: string, layout: "full" | "canvas") => void;
   focusGroup: (id: string) => void;
   /** a preview tab becomes a lasting one (in the focused group, or `groupId`) */
   pinTab: (tab: StageTab, groupId?: string) => void;
@@ -126,6 +137,10 @@ type Store = {
   /** files with unsaved edits (fileKey), so their tab shows ● and asks before closing */
   dirtyFiles: string[];
   setFileDirty: (key: string, dirty: boolean) => void;
+  /** which board the system project shows (documents or playbooks) */
+  systemView: SystemView;
+  /** the system project on that board, opened like a project (setActive) */
+  openSystem: (view: SystemView) => void;
   approvals: Approval[]; // permission prompts waiting for an answer, from the agents' hooks
   addApproval: (a: Approval) => void;
   dropApproval: (id: number) => void;
@@ -163,7 +178,8 @@ const sameTab = (a: StageTab, b: StageTab) =>
  */
 const withTab = (list: StageTab[], tab: StageTab, pin: boolean): StageTab[] => {
   const i = list.findIndex((t) => sameTab(t, tab));
-  if (i >= 0) return list.map((t, j) => (j === i ? { ...tab, preview: !!t.preview && !pin } : t));
+  // (a worktree tab keeps its own full screen / canvas choice)
+  if (i >= 0) return list.map((t, j) => (j === i ? { ...tab, ...(t.kind === "wt" && t.layout ? { layout: t.layout } : {}), preview: !!t.preview && !pin } : t));
   const next = { ...tab, preview: !pin };
   const p = pin ? -1 : list.findIndex((t) => t.preview);
   return p < 0 ? [...list, next] : list.map((t, j) => (j === p ? next : t));
@@ -546,14 +562,15 @@ export const useStore = create<Store>((set, get) => ({
   editor: null,
   // the open file belongs to the worktree on screen, so going elsewhere takes it off the stage (its tab stays).
   // A project coming back from its remembered tabs opens as it was left instead.
-  setActive: (root) =>
+  setActive: (root) => {
     apply((ws) => {
       const f = focused(ws);
       const r = routeTo(ws, root);
       const g = focused(r);
       const restored = !!f && !!g && g.id === f.id && f.root !== root;
       return restored ? r : onFocused(r, (x) => ({ ...x, path: null, editor: null }));
-    }),
+    });
+  },
   openProject: (root) => {
     const id = newGroupId();
     apply((ws) => {
@@ -568,8 +585,10 @@ export const useStore = create<Store>((set, get) => ({
   select: (path, pin = false) => {
     set((s) => ({ worktrees: s.worktrees.map((w) => (w.path === path ? { ...w, unread: false } : w)) }));
     const root = path ? rootOf(get(), path) : get().activeRoot;
+    // a new tab opens the way the last one was switched to
+    const newLayout = useSettings.getState().agentLayout;
     apply((ws) =>
-      onFocused(routeTo(ws, root), (g) => ({ ...g, path, editor: null, tabs: path ? withTab(g.tabs, { kind: "wt", path }, pin) : g.tabs })),
+      onFocused(routeTo(ws, root), (g) => ({ ...g, path, editor: null, tabs: path ? withTab(g.tabs, { kind: "wt", path, layout: newLayout }, pin) : g.tabs })),
     );
   },
   openEditor: (editor, pin = false) => {
@@ -578,6 +597,12 @@ export const useStore = create<Store>((set, get) => ({
       onFocused(editor ? routeTo(ws, root) : ws, (g) => ({ ...g, editor, tabs: editor ? withTab(g.tabs, { kind: "file", ...editor }, pin) : g.tabs })),
     );
   },
+  setSplitSizes: (key, sizes) => apply((ws) => (mine(ws) ? putWin(ws, ME, { ...mine(ws)!, layout: withSizes(mine(ws)!.layout, key, sizes) }) : ws)),
+  setTabLayout: (groupId, path, layout) =>
+    apply((ws) => {
+      const g = ws.groups[groupId];
+      return g ? putGroup(ws, { ...g, tabs: g.tabs.map((t) => (t.kind === "wt" && same(t.path, path) ? { ...t, layout } : t)) }) : ws;
+    }),
   focusGroup: (id) => {
     if (get().focus !== id) apply((ws) => (mine(ws) && winOf(ws, id) === ME ? putWin(ws, ME, { ...mine(ws)!, focus: id }) : ws));
   },
@@ -685,6 +710,11 @@ export const useStore = create<Store>((set, get) => ({
     // its tab may have been closed or replaced by a newer preview since: it comes back as the preview
     const tab = activeTab({ editor: n.editor, selectedPath: n.path });
     apply((ws) => onFocused(routeTo(ws, n.root), (g) => ({ ...g, path: n.path, editor: n.editor, tabs: tab ? withTab(g.tabs, tab, false) : g.tabs })));
+  },
+  systemView: "docs",
+  openSystem: (view) => {
+    set({ systemView: view });
+    get().setActive(SYSTEM_ROOT);
   },
   dirtyFiles: [],
   setFileDirty: (key, dirty) =>

@@ -29,6 +29,22 @@ export const PANEL_STYLES = {
   full: { label: "와이드", hint: "여백 없이 창 끝까지 채우고 선으로만 나눠요. 가장 넓어요." },
 } as const;
 
+// The pattern behind every canvas (React Flow's Background variants; "none" = a plain surface).
+export const CANVAS_BGS = {
+  dots: { label: "점", hint: "칸마다 작은 점을 찍어요. 가장 조용해요." },
+  lines: { label: "격자", hint: "칸마다 가는 선을 그어요. 블록 정렬이 잘 보여요." },
+  cross: { label: "십자", hint: "칸이 만나는 곳에 작은 십자를 그려요." },
+  none: { label: "없음", hint: "무늬 없이 단색 바탕만 둬요." },
+} as const;
+
+// spacing of the pattern in px; 24 is the snap grid, the others its halves and multiples so lines still meet blocks
+export const CANVAS_GAPS = [
+  { px: 12, label: "촘촘" },
+  { px: 24, label: "보통" },
+  { px: 48, label: "넓게" },
+  { px: 96, label: "아주 넓게" },
+] as const;
+
 export const SPEEDS = {
   fast: { label: "빠르게", ms: 120 },
   normal: { label: "보통", ms: 220 },
@@ -41,6 +57,10 @@ type Prefs = {
   speed: keyof typeof SPEEDS;
   motion: boolean;
   panelStyle: keyof typeof PANEL_STYLES;
+  canvasBg: keyof typeof CANVAS_BGS;
+  /** pattern spacing (one of CANVAS_GAPS) and how strongly it shows, 10–100 % */
+  canvasGap: number;
+  canvasAlpha: number;
   defaultAgent: string;
   /** permission mode new worktrees start with */
   defaultPermission: string;
@@ -70,7 +90,7 @@ export const AWAY_CHOICES = [
 ] as const;
 
 export const useSettings = create<Prefs & { set: (p: Partial<Prefs>) => void }>()(
-  persist((set) => ({ theme: "dark", easing: "smooth", speed: "normal", motion: true, panelStyle: "cards", defaultAgent: "auto", defaultPermission: "acceptEdits", disabledAgents: [], agentModels: {}, assistantAgent: "claude-code", assistantModel: "", agentLayout: "full", fullView: "chat", awayMinutes: 15, autoSave: false, set }), { name: "maestro.settings" }),
+  persist((set) => ({ theme: "dark", easing: "smooth", speed: "normal", motion: true, panelStyle: "cards", canvasBg: "dots", canvasGap: 24, canvasAlpha: 100, defaultAgent: "auto", defaultPermission: "acceptEdits", disabledAgents: [], agentModels: {}, assistantAgent: "claude-code", assistantModel: "", agentLayout: "full", fullView: "chat", awayMinutes: 15, autoSave: false, set }), { name: "maestro.settings" }),
 );
 
 /** Motion duration in ms; 0 when the user or the OS turned motion off. */

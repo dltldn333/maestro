@@ -4,7 +4,7 @@ area: ui
 status: done
 files: [src/SettingsDialog.tsx, src/settings.ts, src/App.tsx, src/Sidebar.tsx, src/Canvas.tsx]
 related: [reference/settings-keys.md, features/agents/cli-install.md, features/agents/answer-summaries.md, features/agents/away-stop.md, features/ui/themes-and-motion.md]
-updated: 2026-11-01
+updated: 2026-11-02
 ---
 
 # 설정 창
@@ -31,7 +31,7 @@ updated: 2026-11-01
 - 파일 편집: 자동 저장 켜기/끄기(기본 끔). 켜면 입력을 멈추고 1초 뒤에 저장해요. → [코드 편집기](../editor/code-editor.md)
 
 **스타일 탭**
-- 테마 견본, 패널 구분(분리 / 통합 / 와이드), 모션 사용, 이징, 속도, 미리보기 → [테마와 모션](themes-and-motion.md)
+- 테마 견본, 패널 구분(분리 / 통합 / 와이드), 캔버스 배경(점 / 격자 / 십자 / 없음), 모션 사용, 이징, 속도, 미리보기 → [테마와 모션](themes-and-motion.md)
 
 ## 구현
 
