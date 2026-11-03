@@ -13,6 +13,10 @@ on:
 permissions:
   contents: write
 
+env:
+  # vite runs out of the default ~2 GB heap bundling Monaco on the macOS runners
+  NODE_OPTIONS: --max-old-space-size=6144
+
 jobs:
   build:
     strategy:
