@@ -1014,7 +1014,22 @@ fn save_canvas_state(app: AppHandle, project_root: String, key: String, state_js
     atomic_write(&canvas_path(&app, &project_root, &key)?, &state_json)
 }
 
+/// An app opened from Finder / Dock (or a desktop launcher) gets a bare PATH, without Homebrew, nvm or npm's
+/// global bin, so `claude`, `npm` and friends look missing. Take the PATH the user's login shell sets up.
+#[cfg(not(windows))]
+fn use_shell_path() {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+    // markers: an interactive shell may print a greeting around it
+    let Ok(out) = std::process::Command::new(shell).args(["-ilc", "printf '__MAESTRO_PATH__%s__MAESTRO_PATH__' \"$PATH\""]).output() else { return };
+    let text = String::from_utf8_lossy(&out.stdout);
+    if let Some(path) = text.split("__MAESTRO_PATH__").nth(1).filter(|p| !p.is_empty()) {
+        std::env::set_var("PATH", path);
+    }
+}
+
 fn main() {
+    #[cfg(not(windows))]
+    use_shell_path();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
